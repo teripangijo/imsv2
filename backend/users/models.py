@@ -14,8 +14,8 @@ class CustomUser(AbstractUser):
     username = None
     email = models.EmailField(_('email address'), unique=True)
 
-    role = models.EmailField(_('Role'), choices=Role.choices, default=Role.PEMINTA, max_length=20)
-    departement_code = models.CharField(_('kode bagian/bidang'), max_length=10, blank=True, null=True)
+    role = models.CharField(_('Role'), choices=Role.choices, default=Role.PEMINTA, max_length=20)
+    department_code = models.CharField(_('kode bagian/bidang'), max_length=10, blank=True, null=True)
     password_reset_required = models.BooleanField(_('wajib ganti password'), default=True)
 
     USERNAME_FIELD = 'email'
