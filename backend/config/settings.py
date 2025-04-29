@@ -146,7 +146,7 @@ AUTH_USER_MODEL = 'users.CustomUser'
 # Blok Rest Framework
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authtoken.models.TokenAuthentication', # Gunakan Token Auth
+        'rest_framework.authentication.TokenAuthentication', # Gunakan Token Auth
         # 'rest_framework.authentication.SessionAuthentication', # Bisa ditambahkan jika perlu
     ],
     'DEFAULT_PERMISSION_CLASSES': [
