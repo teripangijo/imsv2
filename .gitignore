@@ -1,0 +1,22 @@
+# Python
+ims/
+__pycache__/
+*.pyc
+*.log
+db.sqlite3
+/static/
+/media/
+.env
+
+# Node
+node_modules/
+build/
+.DS_Store
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor/OS specific
+.idea/
+.vscode/
+*.swp
