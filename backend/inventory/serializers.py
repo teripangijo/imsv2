@@ -8,6 +8,7 @@ from .models import (
 )
 # Impor serializer user yang ringkas
 from users.serializers import BasicUserSerializer, UserSerializer
+from users.models import CustomUser
 from django.utils.translation import gettext_lazy as _
 
 # --- Serializer Produk & Stok ---
@@ -46,12 +47,23 @@ class InventoryItemSerializer(serializers.ModelSerializer):
     added_by = BasicUserSerializer(read_only=True) # Tampilkan info dasar user penambah
 
     class Meta:
-        model = InventoryItem
-        fields = (
-            'id', 'variant', 'quantity', 'purchase_price', # Harga akan disembunyikan di view jika perlu
-            'entry_date', 'expiry_date', 'added_by'
-        )
-        read_only_fields = ('entry_date', 'added_by') # Ini diisi otomatis
+        # ... (Meta sebelumnya) ...
+        fields = ('id', 'variant', 'quantity', 'purchase_price', 'entry_date', 'expiry_date', 'added_by')
+        read_only_fields = ('entry_date', 'added_by')
+
+    def to_representation(self, instance):
+        """Sesuaikan representasi data berdasarkan peran user."""
+        ret = super().to_representation(instance)
+        user = self.context['request'].user
+
+        # Sembunyikan harga beli jika user bukan Operator, Atasan Operator, atau Admin
+        if not (user.is_authenticated and (
+                user.role == CustomUser.Role.OPERATOR or
+                user.role == CustomUser.Role.ATASAN_OPERATOR or
+                user.is_admin)):
+            ret.pop('purchase_price', None) # Hapus field harga dari output
+
+        return ret
 
 class InventoryItemCreateSerializer(serializers.ModelSerializer):
     """Serializer khusus untuk Operator merekam barang masuk."""

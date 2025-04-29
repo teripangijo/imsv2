@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     # Third Party Apps
     'rest_framework',
+    'rest_framework.authtoken',
     'corsheaders',
     # Our App
     'inventory',
@@ -141,3 +142,16 @@ CORS_ALLOWED_ORIGINS = [
 
 # User modul kustom
 AUTH_USER_MODEL = 'users.CustomUser'
+
+# Blok Rest Framework
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authtoken.models.TokenAuthentication', # Gunakan Token Auth
+        # 'rest_framework.authentication.SessionAuthentication', # Bisa ditambahkan jika perlu
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated', # Default: Harus login
+    ],
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'PAGE_SIZE': 20 # Jumlah item per halaman (opsional, tapi bagus)
+}
