@@ -47,7 +47,7 @@ class InventoryItemSerializer(serializers.ModelSerializer):
     added_by = BasicUserSerializer(read_only=True) # Tampilkan info dasar user penambah
 
     class Meta:
-        # ... (Meta sebelumnya) ...
+        model = InventoryItem
         fields = ('id', 'variant', 'quantity', 'purchase_price', 'entry_date', 'expiry_date', 'added_by')
         read_only_fields = ('entry_date', 'added_by')
 
@@ -150,14 +150,12 @@ class RequestCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         items_data = validated_data.pop('items')
-        # Ambil user dari context yang di-pass dari view
-        requester = self.context['request'].user
         # Buat request (status default DRAFT)
-        request = Request.objects.create(requester=requester, **validated_data)
+        request_obj = Request.objects.create(**validated_data)
         # Buat item-item terkait
         for item_data in items_data:
-            RequestItem.objects.create(request=request, **item_data)
-        return request
+            RequestItem.objects.create(request=request_obj, **item_data)
+        return request_obj
 
 # --- Serializer SPMB ---
 class SPMBSerializer(serializers.ModelSerializer):

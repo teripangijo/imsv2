@@ -68,6 +68,7 @@ class Stock(models.Model):
     class Meta:
         verbose_name = _('Level Stok')
         verbose_name_plural = _('Level Stok')
+        ordering = ['variant__name']
 
     def __str__(self):
         return f"Stok {self.variant}: {self.total_quantity}"

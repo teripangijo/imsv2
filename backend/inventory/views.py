@@ -45,7 +45,7 @@ class ProductVariantViewSet(viewsets.ModelViewSet):
 
 class StockViewSet(viewsets.ReadOnlyModelViewSet):
     """Menampilkan daftar stok barang."""
-    queryset = Stock.objects.select_related('variant__category').all() # Optimasi
+    queryset = Stock.objects.select_related('variant__category').order_by('variant__name') # Optimasi
     serializer_class = StockSerializer
     permission_classes = [permissions.IsAuthenticated] # Semua user login bisa lihat stok
 
@@ -622,12 +622,15 @@ class StockOpnameSessionViewSet(viewsets.ModelViewSet):
                      stock = Stock.objects.filter(variant=variant).first()
                      system_quantity = stock.total_quantity if stock else 0
 
+                     difference_value = counted_quantity - system_quantity
+
                      opname_items_to_create.append(
                          StockOpnameItem(
                              opname_session=session,
                              variant=variant,
                              system_quantity=system_quantity,
-                             counted_quantity=counted_quantity
+                             counted_quantity=counted_quantity,
+                             difference=difference_value,
                              # difference, confirmation_status dihitung/default otomatis
                          )
                      )
@@ -645,8 +648,8 @@ class StockOpnameSessionViewSet(viewsets.ModelViewSet):
               return Response({"error": f"Terjadi kesalahan internal saat memproses file: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
          # Berhasil, kembalikan data sesi yg baru dibuat
-         session_serializer = self.get_serializer(session)
-         return Response(session_serializer.data, status=status.HTTP_201_CREATED)
+         response_serializer = StockOpnameSessionSerializer(session, context={'request': request})
+         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 
 
 class StockOpnameItemViewSet(viewsets.ModelViewSet):

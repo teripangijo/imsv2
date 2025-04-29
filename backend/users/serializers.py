@@ -1,6 +1,6 @@
 # backend/users/serializers.py
 from rest_framework import serializers
-from django.contrib.auth import get_user_model
+from django.contrib.auth import get_user_model, authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.core import exceptions as django_exceptions
 from django.utils.translation import gettext_lazy as _
@@ -70,3 +70,46 @@ class ForceChangePasswordSerializer(serializers.Serializer):
         if data['new_password'] != data['new_password_confirm']:
             raise serializers.ValidationError({"new_password_confirm": _("Password baru tidak cocok.")})
         return data
+    
+class CustomAuthTokenSerializer(serializers.Serializer):
+    """Serializer untuk login menggunakan email dan password."""
+    email = serializers.EmailField(label=_("Email"), write_only=True)
+    password = serializers.CharField(
+        label=_("Password"),
+        style={'input_type': 'password'}, # Agar bisa dikenali sebagai password field
+        trim_whitespace=False,
+        write_only=True # Hanya untuk input, tidak ditampilkan di output
+    )
+    # Kita tidak perlu field token di sini, view yg akan generate
+
+    def validate(self, attrs):
+        email = attrs.get('email')
+        password = attrs.get('password')
+
+        if email and password:
+            # Panggil authenticate Django, pastikan ia menggunakan backend
+            # yang mendukung login via email (defaultnya sudah jika USERNAME_FIELD='email')
+            user = authenticate(request=self.context.get('request'),
+                                email=email, password=password) # Gunakan email
+
+            # Jika authenticate gagal (kredensial salah), user akan None
+            if not user:
+                # Cek juga apakah user tidak aktif
+                UserModel = get_user_model()
+                try:
+                     user_obj = UserModel.objects.get(email=email)
+                     if not user_obj.is_active:
+                          msg = _('Akun pengguna tidak aktif.')
+                          raise serializers.ValidationError(msg, code='authorization')
+                except UserModel.DoesNotExist:
+                     pass # Biarkan pesan error default di bawah
+
+                msg = _('Tidak dapat login dengan kredensial yang diberikan.')
+                raise serializers.ValidationError(msg, code='authorization')
+        else:
+            msg = _('Harus menyertakan "email" dan "password".')
+            raise serializers.ValidationError(msg, code='authorization')
+
+        # Jika berhasil, attach user ke data tervalidasi untuk digunakan view
+        attrs['user'] = user
+        return attrs
