@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     'corsheaders',
     # Our App
     'inventory',
+    'users',
 ]
 
 MIDDLEWARE = [
@@ -137,3 +138,6 @@ CORS_ALLOWED_ORIGINS = [
 
 # Agar lebih permissif
 # CORS_ALLOWED_ALL_ORIGINS = True
+
+# User modul kustom
+AUTH_USER_MODEL = 'users.CustomUser'
