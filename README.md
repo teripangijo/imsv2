@@ -77,13 +77,6 @@ Berikut adalah fitur-fitur utama yang telah dirancang dan sebagian diimplementas
     * Konfirmasi hasil opname oleh Operator (Match, Adjust, Reject).
     * Penyesuaian otomatis stok dan pencatatan transaksi jika Operator memilih 'Adjust'.
 
-## Setup (Dasar)
-
-* **Backend:** Kloning repositori, buat virtual environment, install dependensi (`requirements.txt`), konfigurasi koneksi database PostgreSQL di `.env`, jalankan migrasi (`python manage.py migrate`), buat superuser (`python manage.py createsuperuser`), jalankan server (`python manage.py runserver`).
-* **Frontend:** (Direktori `frontend/`) Install dependensi (`npm install`), jalankan server pengembangan (`npm run dev`).
-
-*(Instruksi setup lebih detail dapat ditambahkan nanti)*
-
 ## TODO / Pengembangan Selanjutnya
 
 * Implementasi Frontend React.
