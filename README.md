@@ -16,7 +16,7 @@ Sistem ini dirancang untuk mengelola siklus hidup barang persediaan, mulai dari 
 
 Berikut adalah fitur-fitur utama yang telah dirancang dan sebagian diimplementasikan pada sisi backend API:
 
-**1. Manajemen Pengguna & Akses:**
+1.  **Manajemen Pengguna & Akses:**
     * **Otentikasi:** Login/Logout berbasis Token (DRF Authtoken).
     * **Manajemen Password:** Fitur ganti password dan wajib ganti password saat login pertama.
     * **Peran Pengguna (Roles):**
@@ -27,7 +27,7 @@ Berikut adalah fitur-fitur utama yang telah dirancang dan sebagian diimplementas
         * Administrator
     * **Hak Akses (Permissions):** Kontrol akses berbasis peran untuk setiap endpoint API dan aksi.
 
-**2. Klasifikasi & Manajemen Barang:**
+2.  **Klasifikasi & Manajemen Barang:**
     * **Hierarki Kodefikasi:** Pengelolaan kode barang secara hierarkis (Golongan -> Bidang -> Kelompok -> Sub-Kelompok -> Barang Dasar).
         * Impor data kode barang dasar dari file CSV via management command.
         * Penyimpanan deskripsi (placeholder) untuk setiap level hierarki.
@@ -37,7 +37,7 @@ Berikut adalah fitur-fitur utama yang telah dirancang dan sebagian diimplementas
         * Pembuatan otomatis kode lengkap unik per varian.
         * Kemampuan mencari/membuat varian baru secara dinamis saat input pembelian.
 
-**3. Manajemen Stok & Inventaris:**
+3.  **Manajemen Stok & Inventaris:**
     * **Pencatatan Barang Masuk:**
         * Input manual data pembelian (via API endpoint `InventoryItem`).
         * Upload massal data pembelian dari file Excel/CSV (via API endpoint `upload_receipt`).
@@ -47,7 +47,7 @@ Berikut adalah fitur-fitur utama yang telah dirancang dan sebagian diimplementas
     * **Level Stok (`Stock`):** Pembaruan otomatis jumlah total stok per varian setiap ada barang masuk/keluar/disesuaikan.
     * **Ambang Batas Stok Rendah:** Pengaturan batas minimum per varian.
 
-**4. Alur Kerja Permintaan Barang:**
+4.  **Alur Kerja Permintaan Barang:**
     * **Pembuatan Draft:** Peminta membuat draft permintaan.
     * **Pengajuan:** Peminta mengajukan draft, nomor permintaan otomatis ter-generate.
     * **Persetujuan Atasan Peminta (SPV1):** Approve/Reject dengan komentar.
@@ -59,7 +59,7 @@ Berikut adalah fitur-fitur utama yang telah dirancang dan sebagian diimplementas
     * **Konfirmasi Penerimaan:** Peminta melakukan konfirmasi setelah barang diterima.
     * **Logging:** Pencatatan otomatis setiap langkah dan perubahan status permintaan (`RequestLog`).
 
-**5. Transaksi & Pelaporan:**
+5.  **Transaksi & Pelaporan:**
     * **Log Transaksi (`Transaction`):** Pencatatan otomatis setiap pergerakan stok (IN, OUT, ADJUSTMENT) beserta detail user, barang, kuantitas, dan referensi (Request/SPMB/Receipt).
     * **API Laporan (Read-Only):**
         * Laporan Stok Terkini (dengan filter & search).
@@ -70,12 +70,13 @@ Berikut adalah fitur-fitur utama yang telah dirancang dan sebagian diimplementas
         * Laporan Konsumsi per Unit Peminta (dengan filter tanggal & departemen).
     * **Ekspor Data (CSV):** Kemampuan ekspor untuk Laporan Stok Terkini dan Laporan Histori Transaksi.
 
-**6. Stock Opname:**
+6.  **Stock Opname:**
     * Pembuatan Sesi Opname oleh Admin.
     * Upload hasil perhitungan fisik dari file Excel oleh Admin.
     * Pencatatan otomatis selisih antara sistem dan fisik (`StockOpnameItem`).
     * Konfirmasi hasil opname oleh Operator (Match, Adjust, Reject).
     * Penyesuaian otomatis stok dan pencatatan transaksi jika Operator memilih 'Adjust'.
+
 
 ## TODO / Pengembangan Selanjutnya
 
@@ -86,5 +87,4 @@ Berikut adalah fitur-fitur utama yang telah dirancang dan sebagian diimplementas
 * Deployment.
 * Pengisian deskripsi hierarki kode barang.
 * Ekspor PDF (jika diperlukan).
-
 
