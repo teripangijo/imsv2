@@ -14,6 +14,12 @@ router.register(r'request-logs', views.RequestLogViewSet)
 router.register(r'transactions', views.TransactionViewSet)
 router.register(r'stock-opname-sessions', views.StockOpnameSessionViewSet)
 router.register(r'stock-opname-items', views.StockOpnameItemViewSet)
+router.register(r'reports/current-stock', views.CurrentStockReportViewSet, basename='report-current-stock')
+router.register(r'reports/stock-value-fifo', views.StockValueFIFOReportViewSet, basename='report-stock-value-fifo')
+router.register(r'reports/low-stock-alert', views.LowStockAlertViewSet, basename='report-low-stock-alert')
+router.register(r'reports/moving-items', views.MovingItemsReportViewSet, basename='report-moving-items')
+router.register(r'reports/transactions', views.TransactionReportViewSet, basename='report-transactions')
+router.register(r'reports/consumption', views.ConsumptionReportViewSet, basename='report-consumption')
 
 urlpatterns = [
     path('', include(router.urls)),

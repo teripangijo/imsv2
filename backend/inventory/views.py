@@ -1,12 +1,20 @@
 # backend/inventory/views.py
-from rest_framework import viewsets, status, permissions, generics
+from rest_framework import viewsets, status, permissions, generics, pagination
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import serializers
+from rest_framework import filters
 from rest_framework.views import APIView
-from django.db.models import F # Pastikan F diimpor jika digunakan di DashboardDataView
+from django.db.models import F, Prefetch, Sum, Q, Value, Subquery, OuterRef
+from django.db.models.functions import Coalesce, Abs
+from django.utils.dateparse import parse_date
+from django.http import HttpResponse
+import csv
+from datetime import date, timedelta
+from decimal import Decimal, InvalidOperation
 from django.db import transaction, IntegrityError
 from django.utils import timezone
+from django_filters.rest_framework import DjangoFilterBackend, FilterSet, DateFromToRangeFilter, ModelChoiceFilter, ChoiceFilter, CharFilter
 # from django.shortcuts import get_object_or_404 # Mungkin tidak terpakai
 import pandas as pd
 import openpyxl
@@ -15,7 +23,7 @@ import traceback # Untuk debugging jika perlu
 # Impor model dengan benar
 from .models import (
     ProductVariant, InventoryItem, Stock,
-    Request, RequestItem, SPMB, RequestLog, Transaction,
+    Request, RequestItem, SPMB, RequestLog, Transaction, ProductVariant,
     StockOpnameSession, StockOpnameItem,
     ItemCodeGolongan, ItemCodeBidang, ItemCodeKelompok, ItemCodeSubKelompok, ItemCodeBarang,
     Receipt # Pastikan Receipt hanya diimpor sekali
@@ -27,10 +35,10 @@ from .serializers import (
     RequestDetailSerializer, RequestCreateSerializer, SPMBSerializer,
     RequestLogSerializer, TransactionSerializer, StockOpnameSessionSerializer,
     StockOpnameItemSerializer, StockOpnameFileUploadSerializer,
-    StockOpnameConfirmSerializer,
-    ReceiptUploadSerializer, ReceiptSerializer, # Pastikan ReceiptSerializer diimpor jika ReceiptViewSet dibuat
-    # Mungkin perlu ItemCode... serializers jika ada ViewSetnya
-    ItemCodeBarangSerializer # Impor jika diperlukan nanti
+    StockOpnameConfirmSerializer, StockValueFIFOReportSerializer,
+    ReceiptUploadSerializer, ReceiptSerializer,
+    ItemCodeBarangSerializer,
+    CurrentStockReportSerializer, MovingItemsReportSerializer, ConsumptionReportSerializer,
 )
 # Impor permission kustom
 from .permissions import (
@@ -38,6 +46,616 @@ from .permissions import (
     IsAtasanPeminta, IsAtasanOperator, CanApproveRequestSpv1,
     CanApproveRequestSpv2, CanProcessRequestOperator, IsOwnerOfRequest
 )
+
+# --- FilterSet Kustom untuk Laporan Konsumsi ---
+
+class ConsumptionFilter(FilterSet):
+    # Filter rentang tanggal berdasarkan field 'timestamp' transaksi
+    timestamp_range = DateFromToRangeFilter(field_name='timestamp')
+    # Filter berdasarkan departemen peminta (dari request terkait)
+    department_code = CharFilter(field_name='related_request__requester__department_code', lookup_expr='iexact')
+    # Filter berdasarkan ID varian (opsional, bisa ditambah)
+    # variant_id = NumberFilter(field_name='variant_id')
+
+    class Meta:
+        model = Transaction # Filter dilakukan pada Transaction sebelum agregasi
+        fields = ['timestamp_range', 'department_code'] # Tambahkan field lain jika perlu
+
+# --- ViewSet Baru untuk Laporan Konsumsi ---
+
+class ConsumptionReportViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API endpoint untuk menampilkan laporan konsumsi barang per unit peminta
+    dalam periode tanggal tertentu.
+    Membutuhkan query parameter 'timestamp_range_after' dan 'timestamp_range_before' (YYYY-MM-DD).
+    Opsional: 'department_code'.
+    """
+    serializer_class = ConsumptionReportSerializer
+    permission_classes = [IsOperator | IsAtasanOperator | IsAdminUser]
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter] # Aktifkan DjangoFilterBackend dan Ordering
+    filterset_class = ConsumptionFilter # Gunakan FilterSet kustom
+
+    # Definisikan field mana saja yang bisa diurutkan
+    ordering_fields = [
+        'department_code',
+        'variant_full_code',
+        'variant_type_name',
+        'variant_name',
+        'total_quantity_consumed',
+    ]
+    ordering = ['department_code', 'variant_full_code'] # Default ordering
+
+    def get_queryset(self):
+        """
+        Mengambil data transaksi keluar, mengagregasi per departemen & varian,
+        dan menganotasi dengan detail yang diperlukan serializer.
+        """
+        # Query dasar adalah pada Transaction, karena kita agregasi dari sana
+        queryset = Transaction.objects.filter(
+            transaction_type=Transaction.Type.OUT,
+            related_request__isnull=False, # Hanya hitung yg berasal dari request
+            related_request__requester__isnull=False # Pastikan requester ada
+        ).select_related( # Pilih relasi untuk efisiensi akses di values/annotate
+            'variant__base_item_code',
+            'related_request__requester'
+        )
+
+        # Terapkan filter (tanggal, departemen) menggunakan filterset_class
+        # Filter backend akan otomatis menerapkan filter dari query params
+        # Kita tidak perlu manual filter tanggal/departemen di sini lagi
+
+        # Lakukan Grouping dan Agregasi
+        report_data = queryset.values(
+            # Grouping fields: Departemen dan Varian
+            'related_request__requester__department_code', # Group by department code
+            'variant__id', # Group by variant ID
+        ).annotate(
+            # Hitung total kuantitas keluar (absolut)
+            total_quantity_consumed=Coalesce(Sum(Abs('quantity')), 0),
+
+            # Ambil data lain yang dibutuhkan serializer (ambil nilai pertama dalam grup)
+            # Kita gunakan F() untuk merujuk field terkait
+            department_code=F('related_request__requester__department_code'),
+            requester_id=F('related_request__requester__id'), # Contoh jika ingin ID requester
+            requester_email=F('related_request__requester__email'), # Contoh jika ingin email
+            # Untuk full name, perlu Concat atau diambil nanti
+            # requester_full_name=Concat('related_request__requester__first_name', Value(' '), 'related_request__requester__last_name'), # Contoh Concat
+            variant_id=F('variant__id'),
+            variant_full_code=F('variant__full_code'),
+            variant_type_name=F('variant__type_name'),
+            variant_name=F('variant__name'),
+            variant_unit=F('variant__unit_of_measure'),
+            base_item_description=F('variant__base_item_code__base_description') # Ambil deskripsi dasar
+        ).filter(
+            total_quantity_consumed__gt=0 # Hanya tampilkan yang ada konsumsi
+        ).order_by(
+            'department_code', 'variant_full_code' # Urutan default hasil agregasi
+        )
+
+        # Hasil dari values().annotate() adalah QuerySet berisi dictionary,
+        # yang cocok untuk input ke Serializer non-Model seperti ConsumptionReportSerializer.
+        return report_data
+
+    # Method list standar dari ReadOnlyModelViewSet sudah cukup karena queryset
+    # sudah menghasilkan data dalam format yang sesuai untuk serializer.
+    # Kita tidak perlu override list seperti pada laporan FIFO.
+
+# --- FilterSet Kustom untuk Transaksi ---
+
+class TransactionFilter(FilterSet):
+    # Filter rentang tanggal berdasarkan field 'timestamp'
+    timestamp_range = DateFromToRangeFilter(field_name='timestamp')
+    # Filter berdasarkan tipe transaksi (gunakan choices dari model)
+    transaction_type = ChoiceFilter(choices=Transaction.Type.choices)
+    # Filter berdasarkan variant (bisa pilih dari daftar ProductVariant)
+    variant = ModelChoiceFilter(queryset=ProductVariant.objects.all())
+    # Filter berdasarkan user (jika perlu)
+    # user = ModelChoiceFilter(queryset=get_user_model().objects.all()) # Perlu import get_user_model
+    # Filter berdasarkan receipt (jika perlu)
+    # receipt = ModelChoiceFilter(queryset=Receipt.objects.all())
+
+    class Meta:
+        model = Transaction
+        # Definisikan field lain yang ingin difilter secara eksak
+        fields = ['timestamp_range', 'transaction_type', 'variant'] # Tambahkan 'user', 'receipt' jika perlu
+
+# --- ViewSet Baru untuk Laporan Histori Transaksi ---
+
+class TransactionReportViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API endpoint untuk menampilkan laporan histori transaksi (keluar/masuk/penyesuaian).
+    Read-only, dengan filter tanggal, tipe, varian, search, ordering, dan ekspor CSV.
+    """
+    serializer_class = TransactionSerializer
+    permission_classes = [IsOperator | IsAtasanOperator | IsAdminUser] # Sesuaikan permission jika perlu
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_class = TransactionFilter # Gunakan FilterSet kustom
+
+    # Definisikan field mana saja yang bisa dicari (search)
+    search_fields = [
+        'variant__full_code',       # Cari berdasarkan kode lengkap varian
+        'variant__type_name',       # Cari berdasarkan jenis varian
+        'variant__name',            # Cari berdasarkan nama spesifik varian
+        'user__email',              # Cari berdasarkan email user
+        'user__first_name',
+        'user__last_name',
+        'receipt__receipt_number',  # Cari berdasarkan nomor kuitansi
+        'related_request__request_number', # Cari berdasarkan nomor request
+        'related_spmb__spmb_number',     # Cari berdasarkan nomor SPMB
+        'notes',                    # Cari di catatan
+    ]
+
+    # Definisikan field mana saja yang bisa diurutkan (ordering)
+    ordering_fields = [
+        'timestamp',
+        'variant__full_code',
+        'transaction_type',
+        'quantity',
+        'user__email',
+    ]
+    ordering = ['-timestamp'] # Default: tampilkan transaksi terbaru dulu
+
+    def get_queryset(self):
+        """
+        Mengambil queryset dasar untuk laporan transaksi.
+        """
+        # Ambil data Transaction dan relasi yang sering dibutuhkan serializer
+        queryset = Transaction.objects.select_related(
+            'variant__base_item_code', # Ambil varian & kode dasarnya
+            'user',                    # Ambil info user
+            'inventory_item',          # Ambil info batch jika ada
+            'related_request',         # Ambil info request jika ada
+            'related_spmb',            # Ambil info SPMB jika ada
+            'receipt'                  # Ambil info kuitansi jika ada
+        ).all()
+        return queryset
+
+    # --- ACTION BARU UNTUK EKSPOR CSV ---
+    @action(detail=False, methods=['get'], url_path='export-csv')
+    def export_transactions_csv(self, request):
+        """
+        Ekspor data laporan transaksi ke format CSV.
+        Menerima query parameter filter yang sama dengan list view.
+        """
+        # Terapkan filter yang sama seperti list view
+        queryset = self.filter_queryset(self.get_queryset())
+
+        # Siapkan HttpResponse dengan header CSV
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="laporan_transaksi_{date.today().strftime("%Y%m%d")}.csv"'
+
+        # Buat CSV writer
+        writer = csv.writer(response, delimiter=';')
+
+        # Tulis header kolom (sesuaikan dengan field di TransactionSerializer)
+        header = [
+            'ID Transaksi',
+            'Waktu Transaksi',
+            'Kode Varian',
+            'Jenis Barang',
+            'Nama Spesifik',
+            'Satuan',
+            'Jumlah',
+            'Tipe Transaksi',
+            'User Email',
+            'User Nama',
+            'ID Batch Terkait',
+            'ID Request Terkait',
+            'No Request',
+            'ID SPMB Terkait',
+            'No SPMB',
+            'ID Kuitansi Terkait',
+            'No Kuitansi',
+            'Catatan',
+        ]
+        writer.writerow(header)
+
+        # Tulis data per baris
+        for tx in queryset:
+            variant = tx.variant
+            user = tx.user
+            req = tx.related_request
+            spmb = tx.related_spmb
+            receipt = tx.receipt
+
+            writer.writerow([
+                tx.id,
+                tx.timestamp.strftime('%Y-%m-%d %H:%M:%S') if tx.timestamp else '',
+                getattr(variant, 'full_code', ''),
+                getattr(variant, 'type_name', ''),
+                getattr(variant, 'name', ''),
+                getattr(variant, 'unit_of_measure', ''),
+                tx.quantity,
+                tx.get_transaction_type_display(), # Tampilkan display name
+                getattr(user, 'email', ''),
+                getattr(user, 'get_full_name', lambda: '')(), # Panggil get_full_name jika ada
+                getattr(tx.inventory_item, 'id', ''),
+                getattr(req, 'id', ''),
+                getattr(req, 'request_number', ''),
+                getattr(spmb, 'id', ''),
+                getattr(spmb, 'spmb_number', ''),
+                getattr(receipt, 'id', ''),
+                getattr(receipt, 'receipt_number', ''),
+                tx.notes,
+            ])
+
+        return response
+    # --- AKHIR ACTION EKSPOR CSV ---
+
+# --- ViewSet Baru untuk Laporan Slow/Fast Moving ---
+
+class MovingItemsReportViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API endpoint untuk menampilkan laporan barang slow/fast moving
+    berdasarkan jumlah keluar dalam periode tanggal tertentu.
+    Membutuhkan query parameter 'start_date' dan 'end_date' (YYYY-MM-DD).
+    """
+    serializer_class = MovingItemsReportSerializer
+    permission_classes = [IsOperator | IsAtasanOperator | IsAdminUser]
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = ['total_quantity_issued', 'variant_name', 'full_code']
+    ordering = ['-total_quantity_issued'] # Default: fast-moving
+
+    def get_queryset(self):
+        """
+        Menganotasi ProductVariant dengan total kuantitas keluar
+        berdasarkan filter tanggal dari query parameters.
+        """
+        # Ambil dan Validasi Parameter Tanggal
+        start_date_str = self.request.query_params.get('start_date', None)
+        end_date_str = self.request.query_params.get('end_date', None)
+
+        if not end_date_str: end_date = date.today()
+        else: end_date = parse_date(end_date_str) or date.today()
+
+        if not start_date_str: start_date = end_date - timedelta(days=30)
+        else: start_date = parse_date(start_date_str) or (end_date - timedelta(days=30))
+
+        if start_date > end_date: start_date = end_date - timedelta(days=30)
+
+        print(f"DEBUG: MovingItemsReport - Periode: {start_date} s/d {end_date}")
+
+        # Query Utama
+        # 1. Dapatkan ID varian yang relevan (sama seperti sebelumnya)
+        transactions_in_period = Transaction.objects.filter(
+            transaction_type=Transaction.Type.OUT,
+            timestamp__date__gte=start_date,
+            timestamp__date__lte=end_date
+        )
+        variant_issued_quantities = transactions_in_period.values('variant').annotate(
+            total_issued=Coalesce(Sum(Abs('quantity')), 0)
+        ).filter(total_issued__gt=0)
+        variant_ids = [item['variant'] for item in variant_issued_quantities]
+
+        # 2. Ambil objek ProductVariant
+        queryset = ProductVariant.objects.filter(
+            pk__in=variant_ids
+        ).select_related('base_item_code')
+
+        # 3. Tambahkan anotasi total_quantity_issued
+        # --- PERBAIKAN: Gunakan Q object untuk filter ---
+        annotated_queryset = queryset.annotate(
+             total_quantity_issued=Coalesce(Sum(
+                 Abs('transaction__quantity'),
+                 filter=Q(transaction__transaction_type=Transaction.Type.OUT) &
+                        Q(transaction__timestamp__date__gte=start_date) &
+                        Q(transaction__timestamp__date__lte=end_date)
+             ), 0)
+        )
+        # --- AKHIR PERBAIKAN ---
+
+        return annotated_queryset
+
+    # Override list lagi jika perlu memasukkan nilai dari issued_map secara manual
+    # (Mirip dengan StockValueFIFOReportViewSet, tapi mungkin tidak perlu jika anotasi cukup akurat)
+    # def list(self, request, *args, **kwargs):
+    #     queryset = self.filter_queryset(self.get_queryset())
+    #     page = self.paginate_queryset(queryset)
+    #     data_to_serialize = page if page is not None else queryset
+    #
+    #     # Dapatkan mapping ID varian ke jumlah keluar (seperti di get_queryset)
+    #     start_date, end_date = self._get_date_range(request) # Buat helper method jika perlu
+    #     transactions_in_period = Transaction.objects.filter(...)
+    #     variant_issued_quantities = transactions_in_period.values(...).annotate(...)
+    #     issued_map = {item['variant']: item['total_issued'] for item in variant_issued_quantities}
+    #
+    #     serializer = self.get_serializer(data_to_serialize, many=True)
+    #     final_data = serializer.data
+    #
+    #     # Masukkan nilai dari issued_map
+    #     for item_data in final_data:
+    #         variant_id = item_data.get('id') # Asumsi serializer punya 'id'
+    #         item_data['total_quantity_issued'] = issued_map.get(variant_id, 0)
+    #
+    #     if page is not None:
+    #          return self.get_paginated_response(final_data)
+    #     return Response(final_data)
+    #
+    # def _get_date_range(self, request):
+    #      # Helper untuk mengambil dan memvalidasi tanggal
+    #      # ... (logika ambil start_date, end_date dari query_params) ...
+    #      return start_date, end_date
+
+# ---View Set Laporan Stok Minimum ---
+class LowStockAlertViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API endpoint untuk menampilkan daftar barang yang stoknya
+    sama dengan atau di bawah batas minimum (low stock alert).
+    Read-only.
+    """
+    serializer_class = CurrentStockReportSerializer # Gunakan serializer laporan stok yang ada
+    permission_classes = [IsOperator | IsAtasanOperator | IsAdminUser]
+    # Filter backend bisa ditambahkan jika ingin filter/search/order lebih lanjut di hasil alert
+    # filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    # filterset_fields = { ... }
+    # search_fields = [ ... ]
+    # ordering_fields = [ ... ]
+    ordering = ['variant__full_code'] # Default ordering
+
+    def get_queryset(self):
+        """
+        Mengambil queryset Stock dan memfilternya untuk stok minimum.
+        """
+        # Ambil data Stock dan relasinya
+        queryset = Stock.objects.select_related(
+            'variant__base_item_code'
+        ).filter(
+            # Filter utama: total kuantitas <= ambang batas DAN ambang batas tidak null
+            low_stock_threshold__isnull=False, # Pastikan threshold ada
+            total_quantity__lte=F('low_stock_threshold') # Bandingkan field dengan field
+        ).order_by('variant__full_code') # Urutkan
+
+        # Anda bisa tambahkan filter lain di sini jika perlu
+        # Misalnya, hanya tampilkan yang stoknya > 0 tapi di bawah threshold
+        # queryset = queryset.filter(total_quantity__gt=0)
+
+        return queryset
+
+# --- ViewSet Laporan Nilai Stok FIFO ---
+
+class StockValueFIFOReportViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API endpoint untuk menampilkan laporan nilai stok menggunakan metode FIFO.
+    Read-only. Nilai FIFO dihitung saat request.
+    """
+    serializer_class = StockValueFIFOReportSerializer
+    permission_classes = [IsOperator | IsAtasanOperator | IsAdminUser]
+    # Jika ingin menambahkan filter/search/ordering, uncomment dan sesuaikan:
+    # filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    # filterset_fields = { ... } # Definisikan filter
+    # search_fields = [ ... ] # Definisikan search
+    # ordering_fields = [ ... ] # Definisikan ordering
+    # ordering = ['variant__full_code'] # Default ordering
+
+    def get_queryset(self):
+        """
+        Mengambil queryset Stock dan prefetch batch InventoryItem yang relevan.
+        """
+        # Prefetch hanya InventoryItem yang masih memiliki stok, urutkan FIFO
+        inventory_items_prefetch = Prefetch(
+            'variant__inventory_items', # Nama related_name dari ProductVariant ke InventoryItem
+            queryset=InventoryItem.objects.filter(quantity__gt=0).order_by('entry_date', 'id'),
+            to_attr='fifo_batches' # Simpan hasil prefetch ke atribut sementara 'fifo_batches'
+        )
+
+        # Ambil data Stock, prefetch variant dan batch terkait
+        queryset = Stock.objects.filter(total_quantity__gt=0).select_related( # Hanya tampilkan yg ada stok
+            'variant__base_item_code' # Ambil data dasar varian
+        ).prefetch_related(
+            inventory_items_prefetch # Prefetch batch untuk kalkulasi FIFO
+        ).order_by('variant__full_code') # Urutkan
+
+        return queryset
+
+    def list(self, request, *args, **kwargs):
+        """
+        Override method list untuk menghitung nilai FIFO per item
+        setelah mendapatkan queryset yang dipaginasi.
+        """
+        queryset = self.filter_queryset(self.get_queryset()) # Terapkan filter jika ada
+        page = self.paginate_queryset(queryset) # Lakukan pagination
+
+        # Data yang akan diserialisasi (setelah pagination jika ada)
+        data_to_serialize = page if page is not None else queryset
+
+        results_with_fifo_value = [] # List untuk menyimpan hasil akhir dengan nilai FIFO
+
+        # Iterasi melalui objek Stock yang akan ditampilkan di halaman ini
+        for stock_item in data_to_serialize:
+            total_quantity_on_hand = stock_item.total_quantity
+            fifo_total_value = Decimal('0.00') # Inisialisasi nilai FIFO
+            quantity_to_value = total_quantity_on_hand
+
+            # Akses batch yang sudah di-prefetch dari atribut 'fifo_batches'
+            # Pastikan atribut ini ada (hasil dari prefetch)
+            batches = getattr(stock_item.variant, 'fifo_batches', [])
+
+            # Lakukan kalkulasi FIFO
+            for batch in batches:
+                if quantity_to_value <= 0:
+                    break # Stok sudah habis dinilai
+
+                # Ambil harga beli, anggap 0 jika None atau tidak valid
+                try:
+                    # Pastikan purchase_price adalah Decimal atau bisa dikonversi
+                    purchase_price = batch.purchase_price or Decimal('0.00')
+                    if not isinstance(purchase_price, Decimal):
+                        purchase_price = Decimal(purchase_price)
+                except (TypeError, ValueError, InvalidOperation):
+                     # Tangani jika konversi gagal, anggap harga 0 untuk batch ini
+                     purchase_price = Decimal('0.00')
+                     print(f"Warning: Invalid purchase price '{batch.purchase_price}' for batch ID {batch.id}. Using 0.")
+
+
+                # Tentukan jumlah yg diambil dari batch ini
+                qty_from_this_batch = min(quantity_to_value, batch.quantity)
+
+                # Tambahkan nilai dari batch ini ke total FIFO
+                fifo_total_value += (Decimal(qty_from_this_batch) * purchase_price)
+
+                # Kurangi sisa kuantitas yang perlu dinilai
+                quantity_to_value -= qty_from_this_batch
+
+            # Jika setelah cek semua batch masih ada quantity_to_value > 0
+            # (artinya ada stok tapi tidak ada batch masuk yg tercatat/berharga),
+            # nilai FIFO mungkin tidak mencerminkan seluruh kuantitas.
+            if quantity_to_value > 0:
+                 print(f"Warning: Could not value remaining {quantity_to_value} units for variant {stock_item.variant}. No priced batches found.")
+
+            # Tambahkan nilai FIFO yang sudah dihitung ke data objek Stock
+            # Kita tidak mengubah objek asli, tapi akan pass ini ke serializer
+            stock_item.calculated_fifo_value = fifo_total_value
+            results_with_fifo_value.append(stock_item) # Kumpulkan objek yg sudah ada nilai kalkulasinya
+
+        # Serialisasi data yang sudah memiliki nilai FIFO
+        # Kita perlu memberitahu serializer cara mendapatkan nilai fifo_total_value
+        # Cara termudah adalah dengan memodifikasi data setelah serialisasi dasar
+        # atau menggunakan SerializerMethodField (tapi itu di serializer)
+        # Mari kita modifikasi data setelah serialisasi dasar:
+
+        serializer = self.get_serializer(results_with_fifo_value, many=True)
+        final_data = serializer.data
+
+        # Loop lagi (kurang efisien) atau gunakan dictionary lookup untuk memasukkan nilai FIFO
+        # Membuat dictionary lookup berdasarkan primary key Stock (yaitu variant_id)
+        fifo_values_map = {item.pk: item.calculated_fifo_value for item in results_with_fifo_value}
+
+        # Masukkan nilai FIFO ke hasil serialisasi
+        for item_data in final_data:
+            # Asumsi serializer menyertakan ID variant (atau cara lain untuk mapping)
+            # Jika serializer berbasis Stock, PK nya adalah variant_id
+            # Perlu cara untuk mendapatkan PK dari item_data. Jika tidak ada, mapping sulit.
+            # Alternatif: Serializer menyertakan PK Stock (variant_id)
+            # Mari kita asumsikan serializer StockValueFIFOReportSerializer menyertakan 'variant_id'
+            # Jika tidak, perlu disesuaikan.
+            # Untuk sekarang, kita asumsikan urutannya sama (kurang aman)
+            # Atau kita tambahkan 'id' (pk stock) ke serializer StockValueFIFOReportSerializer
+            pass # Implementasi mapping ini perlu penyesuaian serializer atau loop paralel
+
+        # Karena mapping sulit tanpa ID di serializer, kita gunakan loop paralel sementara
+        # (Pastikan urutan data dari queryset dan serializer.data sama)
+        for i, item_data in enumerate(final_data):
+             if i < len(results_with_fifo_value):
+                 item_data['fifo_total_value'] = results_with_fifo_value[i].calculated_fifo_value
+
+
+        # Kembalikan respons paginasi (jika ada) atau list biasa
+        if page is not None:
+             return self.get_paginated_response(final_data)
+
+        return Response(final_data)
+
+# --- ViewSet Laporan Stok Terkini ---
+
+class CurrentStockReportViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API endpoint untuk menampilkan laporan stok terkini.
+    Read-only, dengan kemampuan filter, pencarian, dan ekspor CSV.
+    """
+    serializer_class = CurrentStockReportSerializer
+    permission_classes = [IsOperator | IsAtasanOperator | IsAdminUser]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = {
+        'variant__type_name': ['exact', 'icontains'],
+        'variant__base_item_code__sub_kelompok__kelompok__bidang__golongan__code': ['exact'],
+        'variant__base_item_code__sub_kelompok__kelompok__bidang__code': ['exact'],
+        'variant__base_item_code__sub_kelompok__kelompok__code': ['exact'],
+        'variant__base_item_code__sub_kelompok__code': ['exact'],
+        'variant__base_item_code__account_code': ['exact'],
+        # 'total_quantity': ['lte', 'gte'], # Bisa ditambahkan jika perlu
+    }
+    search_fields = [
+        'variant__full_code',
+        'variant__type_name',
+        'variant__name',
+        'variant__base_item_code__base_description',
+        'variant__base_item_code__account_code',
+    ]
+    ordering_fields = [
+        'variant__full_code',
+        'variant__type_name',
+        'variant__name',
+        'total_quantity',
+        'last_updated',
+    ]
+    ordering = ['variant__full_code']
+
+    def get_queryset(self):
+        """
+        Mengambil queryset dasar untuk laporan stok.
+        """
+        queryset = Stock.objects.select_related(
+            'variant__base_item_code' # Ambil data dasar varian
+        ).all() # Ambil semua stok, filter low/out of stock bisa di query param
+
+        # Implementasi filter tambahan jika diperlukan
+        query_params = self.request.query_params
+        if query_params.get('low_stock_only') == 'true':
+             queryset = queryset.filter(
+                 low_stock_threshold__isnull=False,
+                 total_quantity__lte=F('low_stock_threshold')
+             )
+        elif query_params.get('out_of_stock_only') == 'true':
+             queryset = queryset.filter(total_quantity__lte=0)
+
+        return queryset
+
+    # --- ACTION BARU UNTUK EKSPOR CSV ---
+    @action(detail=False, methods=['get'], url_path='export-csv')
+    def export_stock_csv(self, request):
+        """
+        Ekspor data laporan stok terkini ke format CSV.
+        Menerima query parameter filter yang sama dengan list view.
+        """
+        # Terapkan filter yang sama seperti list view
+        queryset = self.filter_queryset(self.get_queryset())
+
+        # Siapkan HttpResponse dengan header CSV
+        response = HttpResponse(content_type='text/csv')
+        # Beri nama file download
+        response['Content-Disposition'] = f'attachment; filename="laporan_stok_terkini_{date.today().strftime("%Y%m%d")}.csv"'
+
+        # Buat CSV writer
+        writer = csv.writer(response, delimiter=';') # Gunakan titik koma jika preferensi lokal
+
+        # Tulis header kolom (sesuaikan dengan field di CurrentStockReportSerializer)
+        header = [
+            'Kode Lengkap Varian',
+            'Jenis Barang',
+            'Nama Spesifik (Merk/Tipe)',
+            'Deskripsi Dasar',
+            'Satuan',
+            'Jumlah Stok Saat Ini',
+            # 'Batas Stok Rendah',
+            'Terakhir Update',
+            # 'Status Stok Rendah',
+            # 'Status Stok Habis',
+            # 'Kode Akun',
+        ]
+        writer.writerow(header)
+
+        # Tulis data per baris
+        for stock_item in queryset:
+            # Ambil data terkait dengan aman
+            variant = stock_item.variant
+            base_item = getattr(variant, 'base_item_code', None)
+
+            writer.writerow([
+                getattr(variant, 'full_code', ''),
+                getattr(variant, 'type_name', ''),
+                getattr(variant, 'name', ''),
+                getattr(base_item, 'base_description', '') if base_item else '',
+                getattr(variant, 'unit_of_measure', ''),
+                stock_item.total_quantity,
+                # stock_item.low_stock_threshold,
+                stock_item.last_updated.strftime('%Y-%m-%d %H:%M:%S') if stock_item.last_updated else '',
+                # stock_item.is_low_stock,
+                # stock_item.is_out_of_stock,
+                # getattr(base_item , 'account_code', '') if base_item else '',
+            ])
+
+        return response
+    # --- AKHIR ACTION EKSPOR CSV ---
 
 # --- Views Produk & Stok ---
 
