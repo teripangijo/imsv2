@@ -280,7 +280,6 @@ class TransactionReportViewSet(viewsets.ReadOnlyModelViewSet):
             ])
 
         return response
-    # --- AKHIR ACTION EKSPOR CSV ---
 
 # --- ViewSet Baru untuk Laporan Slow/Fast Moving ---
 
@@ -416,134 +415,133 @@ class LowStockAlertViewSet(viewsets.ReadOnlyModelViewSet):
 class StockValueFIFOReportViewSet(viewsets.ReadOnlyModelViewSet):
     """
     API endpoint untuk menampilkan laporan nilai stok menggunakan metode FIFO.
-    Read-only. Nilai FIFO dihitung saat request.
+    Read-only. Nilai FIFO dihitung saat request. Termasuk ekspor CSV.
     """
     serializer_class = StockValueFIFOReportSerializer
     permission_classes = [IsOperator | IsAtasanOperator | IsAdminUser]
-    # Jika ingin menambahkan filter/search/ordering, uncomment dan sesuaikan:
-    # filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    # filterset_fields = { ... } # Definisikan filter
-    # search_fields = [ ... ] # Definisikan search
-    # ordering_fields = [ ... ] # Definisikan ordering
-    # ordering = ['variant__full_code'] # Default ordering
+    # filter_backends = [...] 
+    # filterset_fields = { ... }
+    # search_fields = [ ... ]
+    # ordering_fields = [ ... ]
+    ordering = ['variant__full_code'] # Default ordering
 
     def get_queryset(self):
         """
         Mengambil queryset Stock dan prefetch batch InventoryItem yang relevan.
         """
-        # Prefetch hanya InventoryItem yang masih memiliki stok, urutkan FIFO
         inventory_items_prefetch = Prefetch(
-            'variant__inventory_items', # Nama related_name dari ProductVariant ke InventoryItem
+            'variant__inventory_items',
             queryset=InventoryItem.objects.filter(quantity__gt=0).order_by('entry_date', 'id'),
-            to_attr='fifo_batches' # Simpan hasil prefetch ke atribut sementara 'fifo_batches'
+            to_attr='fifo_batches'
         )
-
-        # Ambil data Stock, prefetch variant dan batch terkait
-        queryset = Stock.objects.filter(total_quantity__gt=0).select_related( # Hanya tampilkan yg ada stok
-            'variant__base_item_code' # Ambil data dasar varian
+        queryset = Stock.objects.filter(total_quantity__gt=0).select_related(
+            'variant__base_item_code'
         ).prefetch_related(
-            inventory_items_prefetch # Prefetch batch untuk kalkulasi FIFO
-        ).order_by('variant__full_code') # Urutkan
-
+            inventory_items_prefetch
+        ).order_by('variant__full_code')
         return queryset
+
+    def _calculate_fifo_value(self, stock_item):
+        """Helper method untuk menghitung nilai FIFO."""
+        total_quantity_on_hand = stock_item.total_quantity
+        fifo_total_value = Decimal('0.00')
+        quantity_to_value = total_quantity_on_hand
+        batches = getattr(stock_item.variant, 'fifo_batches', [])
+
+        for batch in batches:
+            if quantity_to_value <= 0: break
+            try:
+                purchase_price = batch.purchase_price or Decimal('0.00')
+                if not isinstance(purchase_price, Decimal): purchase_price = Decimal(purchase_price)
+            except (TypeError, ValueError, InvalidOperation) as e_price:
+                 purchase_price = Decimal('0.00')
+                 print(f"Warning (FIFO Calc): Invalid purchase price '{batch.purchase_price}' for batch ID {batch.id}. Using 0.")
+
+            qty_from_this_batch = min(Decimal(quantity_to_value), Decimal(batch.quantity))
+            fifo_total_value += (qty_from_this_batch * purchase_price)
+            quantity_to_value -= qty_from_this_batch
+
+        if quantity_to_value > 0:
+             print(f"Warning (FIFO Calc): Could not value remaining {quantity_to_value} units for variant {getattr(stock_item.variant, 'name', 'N/A')}.")
+
+        return fifo_total_value
 
     def list(self, request, *args, **kwargs):
         """
-        Override method list untuk menghitung nilai FIFO per item
-        setelah mendapatkan queryset yang dipaginasi.
+        Override method list untuk menghitung nilai FIFO per item.
         """
-        queryset = self.filter_queryset(self.get_queryset()) # Terapkan filter jika ada
-        page = self.paginate_queryset(queryset) # Lakukan pagination
-
-        # Data yang akan diserialisasi (setelah pagination jika ada)
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
         data_to_serialize = page if page is not None else queryset
 
-        results_with_fifo_value = [] # List untuk menyimpan hasil akhir dengan nilai FIFO
-
-        # Iterasi melalui objek Stock yang akan ditampilkan di halaman ini
+        results_with_fifo_value = []
         for stock_item in data_to_serialize:
-            total_quantity_on_hand = stock_item.total_quantity
-            fifo_total_value = Decimal('0.00') # Inisialisasi nilai FIFO
-            quantity_to_value = total_quantity_on_hand
-
-            # Akses batch yang sudah di-prefetch dari atribut 'fifo_batches'
-            # Pastikan atribut ini ada (hasil dari prefetch)
-            batches = getattr(stock_item.variant, 'fifo_batches', [])
-
-            # Lakukan kalkulasi FIFO
-            for batch in batches:
-                if quantity_to_value <= 0:
-                    break # Stok sudah habis dinilai
-
-                # Ambil harga beli, anggap 0 jika None atau tidak valid
-                try:
-                    # Pastikan purchase_price adalah Decimal atau bisa dikonversi
-                    purchase_price = batch.purchase_price or Decimal('0.00')
-                    if not isinstance(purchase_price, Decimal):
-                        purchase_price = Decimal(purchase_price)
-                except (TypeError, ValueError, InvalidOperation):
-                     # Tangani jika konversi gagal, anggap harga 0 untuk batch ini
-                     purchase_price = Decimal('0.00')
-                     print(f"Warning: Invalid purchase price '{batch.purchase_price}' for batch ID {batch.id}. Using 0.")
-
-
-                # Tentukan jumlah yg diambil dari batch ini
-                qty_from_this_batch = min(quantity_to_value, batch.quantity)
-
-                # Tambahkan nilai dari batch ini ke total FIFO
-                fifo_total_value += (Decimal(qty_from_this_batch) * purchase_price)
-
-                # Kurangi sisa kuantitas yang perlu dinilai
-                quantity_to_value -= qty_from_this_batch
-
-            # Jika setelah cek semua batch masih ada quantity_to_value > 0
-            # (artinya ada stok tapi tidak ada batch masuk yg tercatat/berharga),
-            # nilai FIFO mungkin tidak mencerminkan seluruh kuantitas.
-            if quantity_to_value > 0:
-                 print(f"Warning: Could not value remaining {quantity_to_value} units for variant {stock_item.variant}. No priced batches found.")
-
-            # Tambahkan nilai FIFO yang sudah dihitung ke data objek Stock
-            # Kita tidak mengubah objek asli, tapi akan pass ini ke serializer
-            stock_item.calculated_fifo_value = fifo_total_value
-            results_with_fifo_value.append(stock_item) # Kumpulkan objek yg sudah ada nilai kalkulasinya
-
-        # Serialisasi data yang sudah memiliki nilai FIFO
-        # Kita perlu memberitahu serializer cara mendapatkan nilai fifo_total_value
-        # Cara termudah adalah dengan memodifikasi data setelah serialisasi dasar
-        # atau menggunakan SerializerMethodField (tapi itu di serializer)
-        # Mari kita modifikasi data setelah serialisasi dasar:
+            # Hitung nilai FIFO menggunakan helper method
+            stock_item.calculated_fifo_value = self._calculate_fifo_value(stock_item)
+            results_with_fifo_value.append(stock_item)
 
         serializer = self.get_serializer(results_with_fifo_value, many=True)
         final_data = serializer.data
 
-        # Loop lagi (kurang efisien) atau gunakan dictionary lookup untuk memasukkan nilai FIFO
-        # Membuat dictionary lookup berdasarkan primary key Stock (yaitu variant_id)
-        fifo_values_map = {item.pk: item.calculated_fifo_value for item in results_with_fifo_value}
-
         # Masukkan nilai FIFO ke hasil serialisasi
-        for item_data in final_data:
-            # Asumsi serializer menyertakan ID variant (atau cara lain untuk mapping)
-            # Jika serializer berbasis Stock, PK nya adalah variant_id
-            # Perlu cara untuk mendapatkan PK dari item_data. Jika tidak ada, mapping sulit.
-            # Alternatif: Serializer menyertakan PK Stock (variant_id)
-            # Mari kita asumsikan serializer StockValueFIFOReportSerializer menyertakan 'variant_id'
-            # Jika tidak, perlu disesuaikan.
-            # Untuk sekarang, kita asumsikan urutannya sama (kurang aman)
-            # Atau kita tambahkan 'id' (pk stock) ke serializer StockValueFIFOReportSerializer
-            pass # Implementasi mapping ini perlu penyesuaian serializer atau loop paralel
-
-        # Karena mapping sulit tanpa ID di serializer, kita gunakan loop paralel sementara
-        # (Pastikan urutan data dari queryset dan serializer.data sama)
         for i, item_data in enumerate(final_data):
              if i < len(results_with_fifo_value):
                  item_data['fifo_total_value'] = results_with_fifo_value[i].calculated_fifo_value
 
-
-        # Kembalikan respons paginasi (jika ada) atau list biasa
         if page is not None:
              return self.get_paginated_response(final_data)
-
         return Response(final_data)
+
+    # --- ACTION BARU UNTUK EKSPOR CSV ---
+    @action(detail=False, methods=['get'], url_path='export-csv')
+    def export_fifo_value_csv(self, request):
+        """
+        Ekspor data laporan nilai stok FIFO ke format CSV.
+        Menerima query parameter filter yang sama dengan list view.
+        """
+        # Terapkan filter yang sama seperti list view
+        queryset = self.filter_queryset(self.get_queryset())
+
+        # Siapkan HttpResponse dengan header CSV
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="laporan_nilai_stok_fifo_{date.today().strftime("%Y%m%d")}.csv"'
+
+        # Buat CSV writer
+        writer = csv.writer(response, delimiter=';')
+
+        # Tulis header kolom (sesuaikan dengan field di StockValueFIFOReportSerializer)
+        header = [
+            'Kode Lengkap Varian',
+            'Jenis Barang',
+            'Nama Spesifik (Merk/Tipe)',
+            'Deskripsi Dasar',
+            'Satuan',
+            'Jumlah Stok Saat Ini',
+            'Total Nilai (FIFO)',
+        ]
+        writer.writerow(header)
+
+        # Tulis data per baris, hitung FIFO untuk setiap item
+        for stock_item in queryset:
+            # Hitung nilai FIFO untuk item ini
+            fifo_value = self._calculate_fifo_value(stock_item)
+
+            # Ambil data terkait dengan aman
+            variant = stock_item.variant
+            base_item = getattr(variant, 'base_item_code', None)
+
+            writer.writerow([
+                getattr(variant, 'full_code', ''),
+                getattr(variant, 'type_name', ''),
+                getattr(variant, 'name', ''),
+                getattr(base_item, 'base_description', '') if base_item else '',
+                getattr(variant, 'unit_of_measure', ''),
+                stock_item.total_quantity,
+                fifo_value, # Masukkan nilai FIFO yang sudah dihitung
+            ])
+
+        return response
+    # --- AKHIR ACTION EKSPOR CSV ---
 
 # --- ViewSet Laporan Stok Terkini ---
 
