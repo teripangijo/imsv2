@@ -195,7 +195,7 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
                      raise serializers.ValidationError(f"Gagal membaca file. Pastikan format Excel (.xlsx) atau CSV (separator ';') valid. Detail: {e_csv}")
 
             # --- Validasi Nama Kolom (PENTING!) ---
-            required_columns = ['Kode_Varian_Lengkap', 'Jumlah', 'Harga_Beli_Satuan', 'Nomor_Kuitansi', 'Tanggal_Kuitansi']
+            required_columns = ['Kode_Barang_Dasar', 'Jenis_Barang', 'Nama_Spesifik', 'Satuan', 'Jumlah', 'Harga_Beli_Satuan', 'Nomor_Kuitansi', 'Tanggal_Kuitansi']
             missing_cols = [col for col in required_columns if col not in df.columns]
             if missing_cols:
                 raise serializers.ValidationError(f"Kolom berikut tidak ditemukan di file: {', '.join(missing_cols)}")
