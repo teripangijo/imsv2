@@ -1,5 +1,5 @@
 # backend/inventory/models.py
-from django.db import models
+from django.db import models, transaction, IntegrityError
 from django.conf import settings # Untuk mengakses AUTH_USER_MODEL
 from django.core.exceptions import ValidationError
 from django.utils import timezone
@@ -29,7 +29,7 @@ class ItemCodeBidang(models.Model):
         ordering = ['golongan__code', 'code']
 
     def __str__(self):
-        return f"{self.golongan.code}.{self.code} - {self.description or 'Tanpa Uraian'}"
+        return f"{self.full_base_code or '(Kode Belum Tergenerate)'} - {self.base_description}"
     
 class ItemCodeKelompok(models.Model):
     bidang = models.ForeignKey(ItemCodeBidang, on_delete=models.CASCADE, related_name='kelompok_set')
@@ -108,24 +108,24 @@ class ItemCodeBarang(models.Model):
             return None
     
 def save(self, *args, **kwargs):
-         # Generate full_base_code saat disimpan jika belum ada atau saat objek baru dibuat
-         # Cek self.pk untuk membedakan create dan update
-         generate_code = False
-         if not self.pk: # Objek baru
-             generate_code = True
-         else: # Objek lama (update)
-             if not self.full_base_code: # Generate jika fieldnya kosong saat update
-                 generate_code = True
+    generate_code = False
+    if not self.pk: # Objek baru
+        generate_code = True
+    else: # Objek lama (update)
+        if not self.full_base_code: # Generate jika fieldnya kosong saat update
+            generate_code = True
 
-         if generate_code:
-             generated_code = self._generate_full_base_code()
-             if generated_code: # Hanya set jika berhasil generate
-                self.full_base_code = generated_code
-             else:
-                 # Apa yg harus dilakukan jika gagal generate? Mungkin log warning?
-                 print(f"Warning: Gagal generate full_base_code untuk ItemCodeBarang dengan subkel={self.sub_kelompok_id}, code={self.code}")
+    if generate_code:
+        generated_code = self._generate_full_base_code()
+        if generated_code: # Hanya set jika berhasil generate
+            self.full_base_code = generated_code
+        else:
+            # --- PERUBAHAN: Raise Error jika Gagal Generate ---
+            # Jangan simpan string kosong, beritahu ada masalah!
+            raise IntegrityError(f"Tidak dapat men-generate full_base_code yang valid untuk ItemCodeBarang dengan subkel={self.sub_kelompok_id}, code={self.code}. Periksa data hierarki induknya.")
+            # --- AKHIR PERUBAHAN ---
 
-         super().save(*args, **kwargs)
+    super().save(*args, **kwargs) # Panggil save asli dari parent
 
 # --- AKHIR MODEL BARU HIERARKI KODE ---
 
