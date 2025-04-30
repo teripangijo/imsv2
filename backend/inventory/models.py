@@ -139,6 +139,7 @@ class ProductVariant(models.Model):
     """Merepresentasikan Varian Barang spesifik (e.g., Pulpen Snowman 0.5)"""
     # category = models.ForeignKey(ProductCategory, related_name='variants', on_delete=models.PROTECT, verbose_name=_('kategori'))
     base_item_code = models.ForeignKey(ItemCodeBarang, related_name='variants', on_delete=models.PROTECT, verbose_name=_('kode barang dasar'))
+    type_name = models.CharField(_('nama jenis'), max_length=100, db_index=True, help_text="Contoh: Pulpen, Pensil, Kertas, dll")
     specific_code = models.CharField(_('kode spesifik'), max_length=3, editable=False, blank=True, help_text="3 digit unik per kode barang dasar, di-generate otomatis.")
     full_code = models.CharField(_('kode barang lengkap'), max_length=20, unique=True, editable=False, blank=True, db_index=True)
 
@@ -151,12 +152,12 @@ class ProductVariant(models.Model):
         verbose_name = _('Varian Produk Spesifik')
         verbose_name_plural = _('Varian Produk Spesifik')
         # Nama varian harus unik dalam satu jenis barang dasar
-        unique_together = ('base_item_code', 'name')
-        ordering = ['base_item_code', 'specific_code'] # Urutkan berdasarkan kode
+        unique_together = ('base_item_code', 'type_name', 'name')
+        ordering = ['base_item_code', 'type_name', 'specific_code'] # Urutkan berdasarkan kode
 
     def __str__(self):
         # Tampilkan kode lengkap jika sudah ada, jika belum (saat baru dibuat), tampilkan nama
-        return f"{self.full_code or '(Kode Belum Ada)'} - {self.name}"
+        return f"{self.full_code or '(Kode Belum Ada)'} - {self.type_name} - {self.name}"
 
 def _generate_specific_code(self):
         """Generate 3 digit kode spesifik berikutnya untuk base_item_code ini."""

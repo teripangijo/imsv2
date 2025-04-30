@@ -85,6 +85,7 @@ class ProductVariantSerializer(serializers.ModelSerializer):
             'base_item_code_id',      # ID untuk POST/PUT
             'specific_code',          # Kode 3 digit (read-only)
             'full_code',              # Kode lengkap (read-only)
+            'type_name',              # Nama tipe produk (wajib diisi user)
             'name',                   # Nama spesifik (wajib diisi user)
             'description',            # Deskripsi tambahan (opsional)
             'unit_of_measure'         # Satuan (pcs, rim, dll.)

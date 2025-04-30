@@ -43,7 +43,7 @@ from .permissions import (
 #     permission_classes = [IsAdminUser | IsOperatorOrReadOnly] # Admin/Operator bisa R/W, lain hanya R
 
 class ProductVariantViewSet(viewsets.ModelViewSet):
-    queryset = ProductVariant.objects.select_related('category').all() # Optimasi query
+    queryset = ProductVariant.objects.all() # Optimasi query
     serializer_class = ProductVariantSerializer
     permission_classes = [IsAdminUser | IsOperatorOrReadOnly]
 
@@ -203,16 +203,26 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
             # Loop per baris di DataFrame
             for index, row in df.iterrows():
                 row_num = index + 2 # Anggap baris data mulai dari baris 2 (setelah header)
+                item_code_barang_obj = None
                 try:
                     # Ambil dan validasi data dasar
-                    variant_code = str(row['Kode_Varian_Lengkap']).strip()
+                    # Ambil data dasar (sesuaikan nama kolom dgn format baru)
+                    base_code = str(row['Kode_Barang_Dasar']).strip()
+                    # --- AMBIL DATA BARU ---
+                    item_type_name = str(row['Jenis_Barang']).strip() # Nama Jenis dari file
+                    variant_spec_name = str(row['Nama_Spesifik']).strip() # Nama Merk/Tipe dari file
+                    # --- AKHIR DATA BARU ---
+                    unit = str(row['Satuan']).strip()
                     quantity = int(row['Jumlah'])
                     price_str = str(row['Harga_Beli_Satuan']).strip()
                     receipt_num = str(row['Nomor_Kuitansi']).strip()
-                    # Konversi tanggal kuitansi (pandas otomatis deteksi format, tapi bisa diformat eksplisit)
-                    receipt_date = pd.to_datetime(row['Tanggal_Kuitansi']).date() # Ambil tanggalnya saja
-                    supplier = str(row.get('Nama_Supplier', '') or '').strip() # Opsional
-                    expiry_str = str(row.get('Tanggal_Kadaluarsa', '') or '').strip() # Opsional
+                    receipt_date = pd.to_datetime(row['Tanggal_Kuitansi']).date()
+                    supplier = str(row.get('Nama_Supplier', '') or '').strip()
+                    expiry_str = str(row.get('Tanggal_Kadaluarsa', '') or '').strip()
+
+                    # Validasi dasar (tambahkan validasi untuk field baru jika perlu)
+                    if not all([base_code, item_type_name, variant_spec_name, unit, quantity, price_str, receipt_num, receipt_date]):
+                         raise ValueError("Data kolom wajib (Kode Dasar, Jenis Barang, Nama Spesifik, Satuan, Jumlah, Harga, No Kuitansi, Tgl Kuitansi) tidak boleh kosong.")
 
                     if quantity <= 0: raise ValueError("Jumlah harus positif.")
                     # Validasi harga (coba konversi ke float/Decimal)
@@ -232,11 +242,32 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
 
                     # 1. Cari ProductVariant
                     try:
-                        variant = ProductVariant.objects.get(full_code=variant_code)
+                        variant = ProductVariant.objects.get(full_code=variant_spec_name)
                     except ProductVariant.DoesNotExist:
-                        raise ValueError(f"Kode Varian Lengkap '{variant_code}' tidak ditemukan.")
+                        raise ValueError(f"Kode Varian Lengkap '{variant_spec_name}' tidak ditemukan.")
+                    if not item_code_barang_obj:
+                        raise ValueError(f"Kode Barang Dasar '{base_code}' tidak ditemukan.")
+                    
+                    # 2. Cari atau Buat ProductVariant Spesifik
+                    variant_obj, variant_created = ProductVariant.objects.get_or_create(
+                        base_item_code=item_code_barang_obj,
+                        type_name__iexact=item_type_name,    # Cari berdasarkan jenis (case-insensitive)
+                        name__iexact=variant_spec_name, # Cari berdasarkan nama spesifik (case-insensitive)
+                        defaults={ # Hanya diisi saat create varian baru
+                            'type_name': item_type_name,     # Simpan jenis
+                            'name': variant_spec_name,       # Simpan nama spesifik
+                            'unit_of_measure': unit
+                            # specific_code dan full_code akan di-generate oleh model save()
+                        }
+                    )
+                    if variant_created:
+                         created_variants += 1
+                         print(f"Info baris {row_num}: Membuat ProductVariant baru: {variant_obj.type_name} - {variant_obj.name} dengan kode {variant_obj.full_code}")
+                    # Jika tidak dibuat baru, cek satuan (sama seperti sebelumnya)
+                    elif variant_obj.unit_of_measure.lower() != unit.lower():
+                         print(f"Warning baris {row_num}: Satuan '{unit}' berbeda dengan data Varian '{variant_obj.name}' ({variant_obj.unit_of_measure}) yang sudah ada. Menggunakan satuan yang sudah ada.")
 
-                    # 2. Cari atau Buat Receipt (gunakan cache)
+                    # 3. Cari atau Buat Receipt (gunakan cache)
                     receipt_key = (receipt_num, receipt_date)
                     receipt = receipt_cache.get(receipt_key)
                     if not receipt:
@@ -251,7 +282,7 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
                         )
                         receipt_cache[receipt_key] = receipt # Simpan di cache
 
-                    # 3. Buat InventoryItem (Individual save untuk update Stock)
+                    # 4. Buat InventoryItem (Individual save untuk update Stock)
                     inventory_item = InventoryItem(
                          variant=variant,
                          receipt=receipt,
@@ -263,12 +294,12 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
                     )
                     inventory_item.save() # Simpan item dulu
 
-                    # 4. Update Stock Level
+                    # 5. Update Stock Level
                     stock, created = Stock.objects.select_for_update().get_or_create(variant=variant)
                     stock.total_quantity += quantity
                     stock.save()
 
-                    # 5. Buat Transaction Log
+                    # 6. Buat Transaction Log
                     Transaction.objects.create(
                         variant=variant,
                         inventory_item=inventory_item,
@@ -284,7 +315,16 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
 
                 except Exception as e_row:
                     # Catat error per baris
-                    error_rows.append({"row": row_num, "error": str(e_row), "data": row.to_dict()})
+                    print(f"Error processing row {row_num}: {e_row}") # Log error utama
+                    # Log data mentah atau kode dasar yg mungkin sudah diparsing
+                    print(f"Raw data for failed row: {row.to_dict()}")
+                    print(f"Attempted base code: {base_code if 'base_code' in locals() else 'N/A'}")
+
+                    error_rows.append({
+                    "row": row_num,
+                    "error": str(e_row),
+                    "data": row.to_dict() # Paling aman mencatat data mentah barisnya
+                    })
 
             # Setelah loop selesai
             if error_rows:

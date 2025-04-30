@@ -14,11 +14,11 @@ from .models import (
 
 @admin.register(ProductVariant)
 class ProductVariantAdmin(admin.ModelAdmin):
-    list_display = ('full_code', 'name', 'base_item_code', 'specific_code', 'unit_of_measure')
-    search_fields = ('name', 'full_code', 'base_item_code__base_description', 'base_item_code__code')
-    list_filter = ('base_item_code__sub_kelompok__kelompok__bidang__golongan', 'base_item_code__sub_kelompok__kelompok__bidang', 'base_item_code__sub_kelompok') # Filter berdasarkan hierarki
+    list_display = ('full_code', 'type_name', 'name', 'base_item_code', 'specific_code', 'unit_of_measure')
+    search_fields = ('name', 'type_name', 'full_code', 'base_item_code__base_description', 'base_item_code__code')
+    list_filter = ('base_item_code__sub_kelompok__kelompok__bidang__golongan', 'base_item_code__sub_kelompok__kelompok__bidang', 'base_item_code__sub_kelompok', 'type_name') # Filter berdasarkan hierarki
     # Fields yang ditampilkan di form tambah/ubah
-    fields = ('base_item_code', 'name', 'description', 'unit_of_measure', 'full_code', 'specific_code')
+    fields = ('base_item_code', 'type_name', 'name', 'description', 'unit_of_measure', 'full_code', 'specific_code')
     # Fields yang hanya bisa dibaca (di-generate otomatis)
     readonly_fields = ('full_code', 'specific_code')
     # Gunakan raw_id_fields jika daftar ItemCodeBarang sangat banyak
