@@ -5,11 +5,12 @@ from rest_framework.response import Response
 from rest_framework import serializers
 from rest_framework.views import APIView
 from django.db.models import F
-from django.db import transaction # Untuk atomicity
+from django.db import transaction, IntegrityError # Untuk atomicity
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 import pandas as pd # Untuk import Excel, tambahkan ke requirements.txt nanti
 import openpyxl # Juga untuk Excel
+from .models import Receipt
 
 from .models import (
     ProductVariant, InventoryItem, Stock,
@@ -24,7 +25,8 @@ from .serializers import (
     RequestDetailSerializer, RequestCreateSerializer, SPMBSerializer,
     RequestLogSerializer, TransactionSerializer, StockOpnameSessionSerializer,
     StockOpnameItemSerializer, StockOpnameFileUploadSerializer,
-    StockOpnameConfirmSerializer
+    StockOpnameConfirmSerializer,
+    ReceiptUploadSerializer,
 )
 # Impor permission kustom
 from .permissions import (
@@ -161,6 +163,151 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
          except Exception as e:
               print(f"Error updating stock during InventoryItem delete {instance.id}: {e}")
               # Roll back? Transaction should handle this implicitly
+
+    @action(detail=False, methods=['post'], permission_classes=[IsOperator], serializer_class=ReceiptUploadSerializer)
+    @transaction.atomic # Bungkus semua proses dalam satu transaksi database
+    def upload_receipt(self, request):
+        """
+        Operator mengunggah file Excel/CSV berisi detail pembelian barang masuk.
+        Membuat Receipt, InventoryItem, update Stock, dan Transaction log.
+        Format file: Kode_Varian_Lengkap, Jumlah, Harga_Beli_Satuan, Nomor_Kuitansi, Tanggal_Kuitansi, Nama_Supplier?, Tanggal_Kadaluarsa?
+        """
+        upload_serializer = ReceiptUploadSerializer(data=request.data)
+        if not upload_serializer.is_valid():
+            return Response(upload_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        file = upload_serializer.validated_data['file']
+        processed_count = 0
+        error_rows = []
+        receipt_cache = {} # Cache untuk objek Receipt yg sudah dibuat/dicari
+
+        try:
+            # Coba baca sebagai Excel dulu, fallback ke CSV jika gagal
+            try:
+                df = pd.read_excel(file, engine='openpyxl')
+            except Exception:
+                # Kembali ke awal file jika read_excel gagal, lalu coba baca CSV
+                try:
+                     file.seek(0)
+                     # Sesuaikan separator jika bukan koma (misal ';')
+                     df = pd.read_csv(file, sep=';') # Ganti sep=',' jika pemisahnya koma
+                except Exception as e_csv:
+                     raise serializers.ValidationError(f"Gagal membaca file. Pastikan format Excel (.xlsx) atau CSV (separator ';') valid. Detail: {e_csv}")
+
+            # --- Validasi Nama Kolom (PENTING!) ---
+            required_columns = ['Kode_Varian_Lengkap', 'Jumlah', 'Harga_Beli_Satuan', 'Nomor_Kuitansi', 'Tanggal_Kuitansi']
+            missing_cols = [col for col in required_columns if col not in df.columns]
+            if missing_cols:
+                raise serializers.ValidationError(f"Kolom berikut tidak ditemukan di file: {', '.join(missing_cols)}")
+
+            # Loop per baris di DataFrame
+            for index, row in df.iterrows():
+                row_num = index + 2 # Anggap baris data mulai dari baris 2 (setelah header)
+                try:
+                    # Ambil dan validasi data dasar
+                    variant_code = str(row['Kode_Varian_Lengkap']).strip()
+                    quantity = int(row['Jumlah'])
+                    price_str = str(row['Harga_Beli_Satuan']).strip()
+                    receipt_num = str(row['Nomor_Kuitansi']).strip()
+                    # Konversi tanggal kuitansi (pandas otomatis deteksi format, tapi bisa diformat eksplisit)
+                    receipt_date = pd.to_datetime(row['Tanggal_Kuitansi']).date() # Ambil tanggalnya saja
+                    supplier = str(row.get('Nama_Supplier', '') or '').strip() # Opsional
+                    expiry_str = str(row.get('Tanggal_Kadaluarsa', '') or '').strip() # Opsional
+
+                    if quantity <= 0: raise ValueError("Jumlah harus positif.")
+                    # Validasi harga (coba konversi ke float/Decimal)
+                    try:
+                         purchase_price = float(price_str.replace(',', '.')) # Handle koma desimal jika ada
+                         if purchase_price < 0: raise ValueError("Harga beli tidak boleh negatif.")
+                    except ValueError:
+                         raise ValueError(f"Format Harga_Beli_Satuan tidak valid: '{price_str}'")
+
+                    expiry_date = None
+                    if expiry_str:
+                        try:
+                            expiry_date = pd.to_datetime(expiry_str).date()
+                        except ValueError:
+                            print(f"Warning baris {row_num}: Format Tanggal_Kadaluarsa '{expiry_str}' tidak valid, akan diabaikan.")
+
+
+                    # 1. Cari ProductVariant
+                    try:
+                        variant = ProductVariant.objects.get(full_code=variant_code)
+                    except ProductVariant.DoesNotExist:
+                        raise ValueError(f"Kode Varian Lengkap '{variant_code}' tidak ditemukan.")
+
+                    # 2. Cari atau Buat Receipt (gunakan cache)
+                    receipt_key = (receipt_num, receipt_date)
+                    receipt = receipt_cache.get(receipt_key)
+                    if not receipt:
+                        receipt, created = Receipt.objects.get_or_create(
+                            receipt_number=receipt_num,
+                            receipt_date=receipt_date,
+                            defaults={ # Hanya diisi saat create
+                                 'supplier_name': supplier,
+                                 'uploaded_by': request.user,
+                                 # 'uploaded_file': file # Mungkin tidak perlu simpan file duplikat di sini?
+                             }
+                        )
+                        receipt_cache[receipt_key] = receipt # Simpan di cache
+
+                    # 3. Buat InventoryItem (Individual save untuk update Stock)
+                    inventory_item = InventoryItem(
+                         variant=variant,
+                         receipt=receipt,
+                         quantity=quantity,
+                         purchase_price=purchase_price,
+                         expiry_date=expiry_date,
+                         added_by=request.user,
+                         entry_date=timezone.now() # Tanggal barang benar-benar masuk sistem
+                    )
+                    inventory_item.save() # Simpan item dulu
+
+                    # 4. Update Stock Level
+                    stock, created = Stock.objects.select_for_update().get_or_create(variant=variant)
+                    stock.total_quantity += quantity
+                    stock.save()
+
+                    # 5. Buat Transaction Log
+                    Transaction.objects.create(
+                        variant=variant,
+                        inventory_item=inventory_item,
+                        quantity=quantity, # Positif
+                        transaction_type=Transaction.Type.IN,
+                        user=request.user,
+                        related_request=None, # Tidak terkait request barang keluar
+                        related_spmb=None,
+                        notes=f"Penerimaan barang via upload kuitansi #{receipt_num}. Item Batch #{inventory_item.id}"
+                    )
+
+                    processed_count += 1
+
+                except Exception as e_row:
+                    # Catat error per baris
+                    error_rows.append({"row": row_num, "error": str(e_row), "data": row.to_dict()})
+
+            # Setelah loop selesai
+            if error_rows:
+                 # Jika ada error, batalkan transaksi (otomatis karena @transaction.atomic)
+                 # dan kembalikan pesan error
+                 raise serializers.ValidationError({
+                     "message": f"Gagal memproses {len(error_rows)} baris dari file.",
+                     "errors": error_rows
+                 })
+
+        except serializers.ValidationError as e_val:
+             # Tangkap validation error yg di-raise manual (misal kolom hilang, format angka)
+             return Response({"error": "Validasi file gagal.", "details": e_val.detail}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e_file:
+             # Tangkap error pembacaan file atau error tak terduga lainnya
+             return Response({"error": f"Terjadi kesalahan saat memproses file: {str(e_file)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Jika berhasil semua
+        return Response({
+            "message": f"Berhasil memproses {processed_count} item barang dari file.",
+            "processed_items": processed_count,
+            "failed_rows": len(error_rows) # Seharusnya 0 jika sampai sini
+        }, status=status.HTTP_201_CREATED) # Atau 200 OK? 201 karena membuat item inventaris.
 
 # --- Views Permintaan Barang (Workflow) ---
 
