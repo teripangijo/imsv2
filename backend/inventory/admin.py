@@ -100,14 +100,13 @@ class ReceiptAdmin(admin.ModelAdmin):
 
     def save_model(self, request, obj, form, change):
         # Set uploaded_by otomatis saat simpan dari admin jika belum ada
-        if not obj.pk: # Hanya saat objek baru dibuat
+        if not obj.pk: 
             obj.uploaded_by = request.user
         super().save_model(request, obj, form, change)
 
 
 # --- Pendaftaran Model Lain (Asumsi tidak berubah signifikan) ---
-# Pastikan ini masih relevan atau sesuaikan jika perlu
-admin.site.register(Request) # Mungkin perlu kustomisasi admin juga
+admin.site.register(Request)
 admin.site.register(RequestItem)
 admin.site.register(SPMB)
 admin.site.register(RequestLog)

@@ -10,21 +10,20 @@ CustomUser = get_user_model()
 class UserSerializer(serializers.ModelSerializer):
     """Serializer dasar untuk menampilkan data user."""
     full_name = serializers.SerializerMethodField()
-    role_display = serializers.CharField(source='get_role_display', read_only=True) # Tampilkan nama peran
+    role_display = serializers.CharField(source='get_role_display', read_only=True)
 
     class Meta:
         model = CustomUser
         # Pilih field yang ingin ditampilkan/diedit via API
         fields = (
             'id', 'email', 'first_name', 'last_name', 'full_name',
-            'role', 'role_display', # Kirim kode peran & nama tampilannya
+            'role', 'role_display', 
             'department_code', 'password_reset_required',
-            'is_active', # Mungkin berguna untuk admin
+            'is_active', #
             # 'date_joined', 'last_login' # Opsional
         )
         # Field yang hanya bisa dibaca (tidak bisa diubah lewat serializer ini)
         read_only_fields = ('email', 'role_display', 'password_reset_required')
-        # Admin mungkin bisa mengubah role atau is_active di view/serializer terpisah
 
     def get_full_name(self, obj):
         return obj.get_full_name()
@@ -41,7 +40,7 @@ class ChangePasswordSerializer(serializers.Serializer):
     new_password = serializers.CharField(required=True, write_only=True)
     new_password_confirm = serializers.CharField(required=True, write_only=True)
 
-    def validate_new_password(self, value):# Gunakan validator bawaan Django
+    def validate_new_password(self, value):
         try:
             validate_password(value, self.context['request'].user)
         except django_exceptions.ValidationError as e:
@@ -58,7 +57,7 @@ class ForceChangePasswordSerializer(serializers.Serializer):
     new_password = serializers.CharField(required=True, write_only=True)
     new_password_confirm = serializers.CharField(required=True, write_only=True)
 
-    def validate_new_password(self, value):# Gunakan validator bawaan Django
+    def validate_new_password(self, value):
         try:
             # Kita tidak punya old_password di sini, user diambil dari context
             validate_password(value, self.context['request'].user)
@@ -80,14 +79,12 @@ class CustomAuthTokenSerializer(serializers.Serializer):
         trim_whitespace=False,
         write_only=True # Hanya untuk input, tidak ditampilkan di output
     )
-    # Kita tidak perlu field token di sini, view yg akan generate
 
     def validate(self, attrs):
         email = attrs.get('email')
         password = attrs.get('password')
 
         if email and password:
-            # Panggil authenticate Django, pastikan ia menggunakan backend
             # yang mendukung login via email (defaultnya sudah jika USERNAME_FIELD='email')
             user = authenticate(request=self.context.get('request'),
                                 email=email, password=password) # Gunakan email
@@ -102,7 +99,7 @@ class CustomAuthTokenSerializer(serializers.Serializer):
                           msg = _('Akun pengguna tidak aktif.')
                           raise serializers.ValidationError(msg, code='authorization')
                 except UserModel.DoesNotExist:
-                     pass # Biarkan pesan error default di bawah
+                     pass
 
                 msg = _('Tidak dapat login dengan kredensial yang diberikan.')
                 raise serializers.ValidationError(msg, code='authorization')

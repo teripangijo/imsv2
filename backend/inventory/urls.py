@@ -23,6 +23,5 @@ router.register(r'reports/consumption', views.ConsumptionReportViewSet, basename
 
 urlpatterns = [
     path('', include(router.urls)),
-     # Tambahkan URL untuk view dashboard jika perlu endpoint terpisah
      # path('dashboard-data/', views.DashboardDataView.as_view(), name='dashboard-data'),
 ]

@@ -1,12 +1,12 @@
 # backend/inventory/models.py
 
-from django.db import models, transaction, IntegrityError # Pastikan IntegrityError diimpor
+from django.db import models, transaction, IntegrityError
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 import uuid
-import traceback # Masih berguna jika ada error tak terduga
+import traceback
 
 # --- MODEL BARU UNTUK HIERARKI KODE BARANG ---
 

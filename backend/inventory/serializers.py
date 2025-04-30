@@ -625,12 +625,11 @@ class SPMBSerializer(serializers.ModelSerializer):
     class Meta:
         model = SPMB
         fields = ('id', 'spmb_number', 'request', 'issued_by', 'issued_at')
-        read_only_fields = fields # SPMB biasanya hanya dibuat oleh sistem (read-only via API umum)
+        read_only_fields = fields
 
 class RequestLogSerializer(serializers.ModelSerializer):
     """Serializer untuk menampilkan log histori request."""
-    user = BasicUserSerializer(read_only=True) # Tampilkan info user yg melakukan aksi
-    # Dapatkan display name untuk status (jika diperlukan)
+    user = BasicUserSerializer(read_only=True)
     status_from_display = serializers.CharField(source='get_status_from_display', read_only=True, allow_null=True)
     status_to_display = serializers.CharField(source='get_status_to_display', read_only=True, allow_null=True)
 

@@ -1,6 +1,6 @@
 # backend/inventory/permissions.py
 from rest_framework import permissions
-from users.models import CustomUser # Impor model user kustom
+from users.models import CustomUser
 
 class IsAdminUser(permissions.BasePermission):
     """Hanya mengizinkan akses untuk user dengan role ADMIN atau superuser."""

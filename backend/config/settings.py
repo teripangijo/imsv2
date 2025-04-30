@@ -147,13 +147,13 @@ AUTH_USER_MODEL = 'users.CustomUser'
 # Blok Rest Framework
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.TokenAuthentication', # Gunakan Token Auth
-        # 'rest_framework.authentication.SessionAuthentication', # Bisa ditambahkan jika perlu
+        'rest_framework.authentication.TokenAuthentication',
+        # 'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated', # Default: Harus login
         'rest_framework.permissions.AllowAny',
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'PAGE_SIZE': 20 # Jumlah item per halaman (opsional, tapi bagus)
+    'PAGE_SIZE': 20
 }

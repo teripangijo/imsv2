@@ -9,15 +9,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView # Pastikan APIView diimpor
 from rest_framework.authtoken.models import Token
 
-# Import serializers yang relevan dari users/serializers.py
 from .serializers import (
     UserSerializer,
     ChangePasswordSerializer,
     ForceChangePasswordSerializer,
-    CustomAuthTokenSerializer # Serializer login kustom kita
+    CustomAuthTokenSerializer
 )
-# Impor permission kustom jika diperlukan (misal, untuk UserViewSet)
-from inventory.permissions import IsAdminUser # Contoh, sesuaikan jika perlu
+from inventory.permissions import IsAdminUser
 
 CustomUser = get_user_model()
 
@@ -60,17 +58,13 @@ class CurrentUserView(generics.RetrieveAPIView):
         print(f"--- Running standard permission checks defined in permission_classes... ---")
 
         try:
-            # Jalankan pemeriksaan permission asli (IsAuthenticated)
             super().check_permissions(request)
-            # Jika baris ini tercapai, berarti permission check lolos
             print(f"--- CurrentUserView: super().check_permissions() PASSED ---")
         except Exception as e:
-             # Jika permission check gagal, ini akan tercetak
              print(f"--- CurrentUserView: super().check_permissions() FAILED with {type(e).__name__} ---")
-             raise e # Lempar lagi errornya agar respons 403 tetap dikirim
+             raise e
 
     def get_object(self):
-        # Mengembalikan objek user yang terkait dengan request saat ini
         return self.request.user
 
 # --- View Login Kustom (Menggantikan CustomObtainAuthToken) ---
@@ -80,7 +74,7 @@ class LoginView(APIView):
     Mengembalikan auth token dan data user.
     """
     permission_classes = [AllowAny] # Siapa saja boleh mencoba login
-    serializer_class = CustomAuthTokenSerializer # Gunakan serializer kustom kita
+    serializer_class = CustomAuthTokenSerializer
 
     def post(self, request, *args, **kwargs):
         # Inisialisasi serializer dengan data dari request
@@ -92,28 +86,21 @@ class LoginView(APIView):
         except serializers.ValidationError as e:
              # Jika validasi gagal, kirim response error
              error_detail = e.detail
-             # Format ulang error jika perlu agar lebih konsisten
              if isinstance(error_detail, list) and len(error_detail) > 0:
                   error_detail = {'detail': error_detail[0]}
              elif isinstance(error_detail, dict):
                   if 'non_field_errors' in error_detail:
                        error_detail = {'detail': error_detail['non_field_errors'][0]}
-                  # Bisa ditambahkan penanganan error per field jika ingin lebih spesifik
 
              return Response({"error": error_detail}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Jika validasi sukses, ambil data user dari serializer
+        
         user = serializer.validated_data['user']
-        # Dapatkan atau buat token untuk user ini
         token, created = Token.objects.get_or_create(user=user)
-        # Siapkan data user untuk disertakan dalam response
         user_data = UserSerializer(user, context={'request': request}).data
-        # Kirim response sukses berisi token dan data user
         return Response({
             'token': token.key,
             'user': user_data
         }, status=status.HTTP_200_OK)
-# --- Akhir View Login Kustom ---
 
 class LogoutView(APIView):
     """
@@ -128,7 +115,6 @@ class LogoutView(APIView):
             # Kirim response sukses tanpa konten
             return Response(status=status.HTTP_204_NO_CONTENT)
         except (AttributeError, Token.DoesNotExist):
-            # Handle jika user tidak punya token (misal, belum pernah login pakai token)
             return Response({"error": "Token tidak ditemukan atau user tidak memiliki token."},
                             status=status.HTTP_400_BAD_REQUEST)
 
@@ -178,19 +164,15 @@ class ForceChangePasswordView(generics.UpdateAPIView):
         user = self.request.user
         # Hanya user yang WAJIB ganti password yang bisa akses endpoint ini
         if not user.password_reset_required:
-             # Jika tidak wajib, endpoint ini tidak berlaku
              raise Http404("Penggantian password tidak diwajibkan untuk user ini.")
         return user
 
     def update(self, request, *args, **kwargs):
         self.object = self.get_object()
-        # Kita perlu pass context request ke serializer agar validasi password bisa jalan
         serializer = self.get_serializer(data=request.data, context={'request': request})
 
         if serializer.is_valid():
-            # Set password baru (sudah divalidasi serializer)
             self.object.set_password(serializer.validated_data.get("new_password"))
-            # Set flag jadi False setelah berhasil ganti
             self.object.password_reset_required = False
             self.object.save()
             return Response({"message": "Password awal berhasil diatur."}, status=status.HTTP_200_OK)
