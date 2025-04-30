@@ -82,20 +82,50 @@ class ItemCodeBarang(models.Model):
      account_code = models.CharField(_('kode akun'), max_length=20, blank=True, null=True)
      account_description = models.CharField(_('uraian akun'), max_length=100, blank=True, null=True)
 
+     full_base_code = models.CharField(_('kode barang lengkap'), max_length=20, unique=True, editable=False, blank=True, db_index=True) # Kode lengkap (tanpa spesifik)
+
      class Meta:
          verbose_name = _('Kode Barang Dasar')
          verbose_name_plural = _('Kode Barang Dasar')
          unique_together = ('sub_kelompok', 'code')
-         ordering = ['sub_kelompok', 'code']
+         ordering = ['full_base_code'] # Urutkan berdasarkan kode barang lengkap
 
      def __str__(self):
          return f"{self.get_full_base_code()} - {self.base_description}"
 
-     def get_full_base_code(self):
-         """Mengembalikan Kode Barang lengkap tanpa kode spesifik. Misal: 1010101001"""
-         prefix = self.sub_kelompok.get_full_base_code_prefix()
-         brg_code = self.code.zfill(3) # Harusnya 3 digit
-         return f"{prefix}{brg_code}"
+     def _generate_full_base_code(self):
+         """Helper internal untuk men-generate kode dasar lengkap."""
+         # Pastikan objek terkait ada sebelum mengakses atributnya
+         if not self.sub_kelompok_id or not self.code:
+             return None # Atau raise error jika sub_kelompok & code wajib ada saat ini dipanggil
+         try:
+            # Perlu try-except jika sub_kelompok mungkin belum sepenuhnya di-load
+            prefix = self.sub_kelompok.get_full_base_code_prefix()
+            brg_code = self.code.zfill(3)
+            return f"{prefix}{brg_code}"
+         except (AttributeError, Exception) as e:
+            print(f"Warning: Tidak bisa generate prefix untuk subkelompok_id {self.sub_kelompok_id}. Error: {e}")
+            return None
+    
+def save(self, *args, **kwargs):
+         # Generate full_base_code saat disimpan jika belum ada atau saat objek baru dibuat
+         # Cek self.pk untuk membedakan create dan update
+         generate_code = False
+         if not self.pk: # Objek baru
+             generate_code = True
+         else: # Objek lama (update)
+             if not self.full_base_code: # Generate jika fieldnya kosong saat update
+                 generate_code = True
+
+         if generate_code:
+             generated_code = self._generate_full_base_code()
+             if generated_code: # Hanya set jika berhasil generate
+                self.full_base_code = generated_code
+             else:
+                 # Apa yg harus dilakukan jika gagal generate? Mungkin log warning?
+                 print(f"Warning: Gagal generate full_base_code untuk ItemCodeBarang dengan subkel={self.sub_kelompok_id}, code={self.code}")
+
+         super().save(*args, **kwargs)
 
 # --- AKHIR MODEL BARU HIERARKI KODE ---
 
