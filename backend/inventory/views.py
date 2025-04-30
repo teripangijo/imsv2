@@ -50,32 +50,29 @@ from .permissions import (
 # --- FilterSet Kustom untuk Laporan Konsumsi ---
 
 class ConsumptionFilter(FilterSet):
-    # Filter rentang tanggal berdasarkan field 'timestamp' transaksi
     timestamp_range = DateFromToRangeFilter(field_name='timestamp')
-    # Filter berdasarkan departemen peminta (dari request terkait)
     department_code = CharFilter(field_name='related_request__requester__department_code', lookup_expr='iexact')
-    # Filter berdasarkan ID varian (opsional, bisa ditambah)
-    # variant_id = NumberFilter(field_name='variant_id')
+    # Tambahkan filter lain jika perlu, misal variant
+    # variant = ModelChoiceFilter(queryset=ProductVariant.objects.all(), field_name='variant')
 
     class Meta:
-        model = Transaction # Filter dilakukan pada Transaction sebelum agregasi
-        fields = ['timestamp_range', 'department_code'] # Tambahkan field lain jika perlu
+        model = Transaction
+        fields = ['timestamp_range', 'department_code', 'variant'] # Tambahkan 'variant' jika filter di atas diaktifkan
 
-# --- ViewSet Baru untuk Laporan Konsumsi ---
+# --- ViewSet Baru untuk Laporan Konsumsi (dengan Ekspor CSV) ---
 
 class ConsumptionReportViewSet(viewsets.ReadOnlyModelViewSet):
     """
     API endpoint untuk menampilkan laporan konsumsi barang per unit peminta
-    dalam periode tanggal tertentu.
+    dalam periode tanggal tertentu. Termasuk ekspor CSV.
     Membutuhkan query parameter 'timestamp_range_after' dan 'timestamp_range_before' (YYYY-MM-DD).
-    Opsional: 'department_code'.
+    Opsional: 'department_code', 'variant'.
     """
     serializer_class = ConsumptionReportSerializer
     permission_classes = [IsOperator | IsAtasanOperator | IsAdminUser]
-    filter_backends = [DjangoFilterBackend, filters.OrderingFilter] # Aktifkan DjangoFilterBackend dan Ordering
-    filterset_class = ConsumptionFilter # Gunakan FilterSet kustom
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_class = ConsumptionFilter
 
-    # Definisikan field mana saja yang bisa diurutkan
     ordering_fields = [
         'department_code',
         'variant_full_code',
@@ -83,83 +80,125 @@ class ConsumptionReportViewSet(viewsets.ReadOnlyModelViewSet):
         'variant_name',
         'total_quantity_consumed',
     ]
-    ordering = ['department_code', 'variant_full_code'] # Default ordering
+    ordering = ['department_code', 'variant_full_code']
 
     def get_queryset(self):
         """
         Mengambil data transaksi keluar, mengagregasi per departemen & varian,
         dan menganotasi dengan detail yang diperlukan serializer.
         """
-        # Query dasar adalah pada Transaction, karena kita agregasi dari sana
         queryset = Transaction.objects.filter(
             transaction_type=Transaction.Type.OUT,
-            related_request__isnull=False, # Hanya hitung yg berasal dari request
-            related_request__requester__isnull=False # Pastikan requester ada
-        ).select_related( # Pilih relasi untuk efisiensi akses di values/annotate
+            related_request__isnull=False,
+            related_request__requester__isnull=False
+        ).select_related(
             'variant__base_item_code',
             'related_request__requester'
         )
 
-        # Terapkan filter (tanggal, departemen) menggunakan filterset_class
-        # Filter backend akan otomatis menerapkan filter dari query params
-        # Kita tidak perlu manual filter tanggal/departemen di sini lagi
+        # Filter diterapkan oleh DjangoFilterBackend menggunakan filterset_class
 
-        # Lakukan Grouping dan Agregasi
         report_data = queryset.values(
-            # Grouping fields: Departemen dan Varian
-            'related_request__requester__department_code', # Group by department code
-            'variant__id', # Group by variant ID
+            'related_request__requester__department_code', # Grouping
+            'variant__id',                                  # Grouping
         ).annotate(
-            # Hitung total kuantitas keluar (absolut)
             total_quantity_consumed=Coalesce(Sum(Abs('quantity')), 0),
-
-            # Ambil data lain yang dibutuhkan serializer (ambil nilai pertama dalam grup)
-            # Kita gunakan F() untuk merujuk field terkait
+            # Ambil data lain menggunakan F expression
             department_code=F('related_request__requester__department_code'),
-            requester_id=F('related_request__requester__id'), # Contoh jika ingin ID requester
-            requester_email=F('related_request__requester__email'), # Contoh jika ingin email
-            # Untuk full name, perlu Concat atau diambil nanti
-            # requester_full_name=Concat('related_request__requester__first_name', Value(' '), 'related_request__requester__last_name'), # Contoh Concat
+            # Ambil data requester jika ingin ditampilkan per user, bukan hanya dept
+            # requester_id=F('related_request__requester__id'),
+            # requester_email=F('related_request__requester__email'),
             variant_id=F('variant__id'),
             variant_full_code=F('variant__full_code'),
             variant_type_name=F('variant__type_name'),
             variant_name=F('variant__name'),
             variant_unit=F('variant__unit_of_measure'),
-            base_item_description=F('variant__base_item_code__base_description') # Ambil deskripsi dasar
+            base_item_description=F('variant__base_item_code__base_description')
         ).filter(
             total_quantity_consumed__gt=0 # Hanya tampilkan yang ada konsumsi
-        ).order_by(
-            'department_code', 'variant_full_code' # Urutan default hasil agregasi
         )
+        # Ordering akan diterapkan oleh OrderingFilter
 
-        # Hasil dari values().annotate() adalah QuerySet berisi dictionary,
-        # yang cocok untuk input ke Serializer non-Model seperti ConsumptionReportSerializer.
         return report_data
 
-    # Method list standar dari ReadOnlyModelViewSet sudah cukup karena queryset
-    # sudah menghasilkan data dalam format yang sesuai untuk serializer.
-    # Kita tidak perlu override list seperti pada laporan FIFO.
+    # --- ACTION BARU UNTUK EKSPOR CSV ---
+    @action(detail=False, methods=['get'], url_path='export-csv')
+    def export_consumption_csv(self, request):
+        """
+        Ekspor data laporan konsumsi per unit/varian ke format CSV.
+        Menerima query parameter filter yang sama dengan list view.
+        """
+        # Terapkan filter yang sama seperti list view
+        queryset = self.filter_queryset(self.get_queryset())
+        # Terapkan ordering yang diminta (atau default)
+        # OrderingFilter biasanya menangani ini, tapi kita bisa terapkan manual jika perlu
+        ordering = self.request.query_params.get('ordering', self.ordering[0] if self.ordering else None)
+        if ordering and ordering in self.ordering_fields:
+             # Perlu mapping nama field ordering ke field anotasi/values
+             # Contoh sederhana:
+             db_ordering_field = ordering
+             # Ganti nama jika ordering field berbeda dari nama anotasi/values
+             if ordering == 'variant_name': db_ordering_field = 'variant__name' # Sesuaikan
+             # ... mapping lain ...
+             queryset = queryset.order_by(db_ordering_field)
+        elif self.ordering:
+             # Terapkan default ordering jika ada
+             queryset = queryset.order_by(*self.ordering)
+
+
+        # Siapkan HttpResponse dengan header CSV
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="laporan_konsumsi_{date.today().strftime("%Y%m%d")}.csv"'
+
+        writer = csv.writer(response, delimiter=';')
+
+        # Tulis header kolom (sesuaikan dengan field di ConsumptionReportSerializer)
+        header = [
+            'Kode Departemen',
+            # 'ID Peminta', # Jika dikelompokkan per peminta
+            # 'Email Peminta', # Jika dikelompokkan per peminta
+            'Kode Varian',
+            'Jenis Barang',
+            'Nama Spesifik',
+            'Deskripsi Dasar',
+            'Satuan',
+            'Total Kuantitas Konsumsi',
+        ]
+        writer.writerow(header)
+
+        # Tulis data per baris
+        # Karena queryset sudah berisi dictionary hasil values().annotate(),
+        # kita bisa langsung akses key-nya
+        for row in queryset:
+            writer.writerow([
+                row.get('department_code', ''),
+                # row.get('requester_id', ''), # Jika ada
+                # row.get('requester_email', ''), # Jika ada
+                row.get('variant_full_code', ''),
+                row.get('variant_type_name', ''),
+                row.get('variant_name', ''),
+                row.get('base_item_description', ''),
+                row.get('variant_unit', ''),
+                row.get('total_quantity_consumed', 0),
+            ])
+
+        return response
+    # --- AKHIR ACTION EKSPOR CSV ---
 
 # --- FilterSet Kustom untuk Transaksi ---
 
 class TransactionFilter(FilterSet):
-    # Filter rentang tanggal berdasarkan field 'timestamp'
     timestamp_range = DateFromToRangeFilter(field_name='timestamp')
-    # Filter berdasarkan tipe transaksi (gunakan choices dari model)
     transaction_type = ChoiceFilter(choices=Transaction.Type.choices)
-    # Filter berdasarkan variant (bisa pilih dari daftar ProductVariant)
     variant = ModelChoiceFilter(queryset=ProductVariant.objects.all())
-    # Filter berdasarkan user (jika perlu)
-    # user = ModelChoiceFilter(queryset=get_user_model().objects.all()) # Perlu import get_user_model
-    # Filter berdasarkan receipt (jika perlu)
-    # receipt = ModelChoiceFilter(queryset=Receipt.objects.all())
+    # user = ModelChoiceFilter(queryset=get_user_model().objects.all()) # Uncomment jika filter user diaktifkan
+    # receipt = ModelChoiceFilter(queryset=Receipt.objects.all()) # Uncomment jika filter receipt diaktifkan
 
     class Meta:
         model = Transaction
-        # Definisikan field lain yang ingin difilter secara eksak
         fields = ['timestamp_range', 'transaction_type', 'variant'] # Tambahkan 'user', 'receipt' jika perlu
 
-# --- ViewSet Baru untuk Laporan Histori Transaksi ---
+# --- ViewSet untuk Laporan Histori Transaksi (dengan Ekspor CSV) ---
 
 class TransactionReportViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -171,21 +210,18 @@ class TransactionReportViewSet(viewsets.ReadOnlyModelViewSet):
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_class = TransactionFilter # Gunakan FilterSet kustom
 
-    # Definisikan field mana saja yang bisa dicari (search)
     search_fields = [
-        'variant__full_code',       # Cari berdasarkan kode lengkap varian
-        'variant__type_name',       # Cari berdasarkan jenis varian
-        'variant__name',            # Cari berdasarkan nama spesifik varian
-        'user__email',              # Cari berdasarkan email user
+        'variant__full_code',
+        'variant__type_name',
+        'variant__name',
+        'user__email',
         'user__first_name',
         'user__last_name',
-        'receipt__receipt_number',  # Cari berdasarkan nomor kuitansi
-        'related_request__request_number', # Cari berdasarkan nomor request
-        'related_spmb__spmb_number',     # Cari berdasarkan nomor SPMB
-        'notes',                    # Cari di catatan
+        'receipt__receipt_number',
+        'related_request__request_number',
+        'related_spmb__spmb_number',
+        'notes',
     ]
-
-    # Definisikan field mana saja yang bisa diurutkan (ordering)
     ordering_fields = [
         'timestamp',
         'variant__full_code',
@@ -193,24 +229,23 @@ class TransactionReportViewSet(viewsets.ReadOnlyModelViewSet):
         'quantity',
         'user__email',
     ]
-    ordering = ['-timestamp'] # Default: tampilkan transaksi terbaru dulu
+    ordering = ['-timestamp'] # Default: transaksi terbaru dulu
 
     def get_queryset(self):
         """
         Mengambil queryset dasar untuk laporan transaksi.
         """
-        # Ambil data Transaction dan relasi yang sering dibutuhkan serializer
         queryset = Transaction.objects.select_related(
-            'variant__base_item_code', # Ambil varian & kode dasarnya
-            'user',                    # Ambil info user
-            'inventory_item',          # Ambil info batch jika ada
-            'related_request',         # Ambil info request jika ada
-            'related_spmb',            # Ambil info SPMB jika ada
-            'receipt'                  # Ambil info kuitansi jika ada
+            'variant__base_item_code',
+            'user',
+            'inventory_item',
+            'related_request',
+            'related_spmb',
+            'receipt'
         ).all()
         return queryset
 
-    # --- ACTION BARU UNTUK EKSPOR CSV ---
+    # --- ACTION UNTUK EKSPOR CSV ---
     @action(detail=False, methods=['get'], url_path='export-csv')
     def export_transactions_csv(self, request):
         """
@@ -219,12 +254,18 @@ class TransactionReportViewSet(viewsets.ReadOnlyModelViewSet):
         """
         # Terapkan filter yang sama seperti list view
         queryset = self.filter_queryset(self.get_queryset())
+        # Terapkan ordering jika ada
+        ordering = self.request.query_params.get('ordering')
+        if ordering and ordering.lstrip('-') in self.ordering_fields:
+             queryset = queryset.order_by(ordering)
+        elif self.ordering:
+             queryset = queryset.order_by(*self.ordering)
+
 
         # Siapkan HttpResponse dengan header CSV
         response = HttpResponse(content_type='text/csv')
         response['Content-Disposition'] = f'attachment; filename="laporan_transaksi_{date.today().strftime("%Y%m%d")}.csv"'
 
-        # Buat CSV writer
         writer = csv.writer(response, delimiter=';')
 
         # Tulis header kolom (sesuaikan dengan field di TransactionSerializer)
@@ -280,6 +321,7 @@ class TransactionReportViewSet(viewsets.ReadOnlyModelViewSet):
             ])
 
         return response
+    # --- AKHIR ACTION EKSPOR CSV ---
 
 # --- ViewSet Baru untuk Laporan Slow/Fast Moving ---
 
