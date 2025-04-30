@@ -13,7 +13,7 @@ from .models import (
 # Impor serializer user & model user
 from users.serializers import BasicUserSerializer, UserSerializer
 from users.models import CustomUser
-
+from django.utils.translation import gettext_lazy as _ 
 # --- Serializer untuk Hierarki Kode (Baru) ---
 # (Ini sederhana, bisa dikembangkan nanti jika perlu fitur lebih)
 
@@ -211,14 +211,52 @@ class StockOpnameItemSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ('difference',)
 
+class RequestListSerializer(serializers.ModelSerializer):
+    """Serializer ringkas untuk daftar permintaan."""
+    requester = BasicUserSerializer(read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    # Coba ambil nomor SPMB jika ada, tangani jika spmb_document belum ada
+    spmb_number = serializers.CharField(source='spmb_document.spmb_number', read_only=True, allow_null=True, default=None)
 
-# Serializer lain seperti RequestList, RequestDetail, SPMB, RequestLog,
-# StockOpnameSession, StockOpnameFileUpload, StockOpnameConfirm
-# umumnya tidak perlu diubah karena relasinya ke Request atau User,
-# TAPI jika mereka menampilkan detail item (seperti RequestDetailSerializer),
-# pastikan mereka menggunakan RequestItemSerializer yang sudah diupdate.
+    class Meta:
+        model = Request
+        fields = (
+            'id', 'request_number', 'requester', 'status', 'status_display',
+            'created_at', 'submitted_at', 'supervisor1_decision_at',
+            'supervisor2_decision_at', 'operator_processed_at', 'received_at',
+            'spmb_number' # Tampilkan nomor SPMB jika ada
+        )
+        read_only_fields = fields # List view biasanya read-only
 
-# Contoh penyesuaian RequestDetailSerializer jika menampilkan item
+class RequestCreateSerializer(serializers.ModelSerializer):
+    """Serializer untuk membuat permintaan baru oleh Peminta."""
+    # Items diterima sebagai list of objects saat membuat
+    # Kita perlu mendefinisikan ulang RequestItemSerializer ringkas untuk write di sini
+    # atau pastikan RequestItemSerializer di atas menangani write_only=True untuk variant_id
+    items = RequestItemSerializer(many=True) # Gunakan RequestItemSerializer yg sudah ada
+    # Requester akan diisi otomatis di view
+
+    class Meta:
+        model = Request
+        # Hanya field 'items' yang diterima dari input saat membuat request baru
+        # ID akan dibuat otomatis, requester diambil dari view
+        fields = ('id', 'items')
+        read_only_fields = ('id',)
+
+    def create(self, validated_data):
+        # 'requester' sudah ada di dalam validated_data karena di-pass dari view.perform_create
+        items_data = validated_data.pop('items')
+
+        # Langsung create Request menggunakan validated_data (sudah termasuk requester)
+        request_obj = Request.objects.create(**validated_data)
+
+        # Buat item-item terkait
+        for item_data in items_data:
+            # Pastikan 'variant' ada di item_data (dari variant_id di RequestItemSerializer)
+            RequestItem.objects.create(request=request_obj, **item_data)
+
+        return request_obj
+
 class RequestDetailSerializer(serializers.ModelSerializer):
     requester = BasicUserSerializer(read_only=True)
     supervisor1_approver = BasicUserSerializer(read_only=True)
@@ -241,6 +279,65 @@ class RequestDetailSerializer(serializers.ModelSerializer):
             'received_at', 'items', 'spmb_document', #'logs'
         )
         read_only_fields = fields
+
+class SPMBSerializer(serializers.ModelSerializer):
+    """Serializer untuk menampilkan detail SPMB."""
+    # Tampilkan info ringkas request terkait menggunakan serializer yg sesuai
+    request = RequestListSerializer(read_only=True)
+    issued_by = BasicUserSerializer(read_only=True)
+
+    class Meta:
+        model = SPMB
+        fields = ('id', 'spmb_number', 'request', 'issued_by', 'issued_at')
+        read_only_fields = fields # SPMB biasanya hanya dibuat oleh sistem (read-only via API umum)
+
+class RequestLogSerializer(serializers.ModelSerializer):
+    """Serializer untuk menampilkan log histori request."""
+    user = BasicUserSerializer(read_only=True) # Tampilkan info user yg melakukan aksi
+    # Dapatkan display name untuk status (jika diperlukan)
+    status_from_display = serializers.CharField(source='get_status_from_display', read_only=True, allow_null=True)
+    status_to_display = serializers.CharField(source='get_status_to_display', read_only=True, allow_null=True)
+
+    class Meta:
+        model = RequestLog
+        fields = (
+            'id', 'request', 'user', 'timestamp', 'action',
+            'status_from', 'status_from_display', 'status_to', 'status_to_display',
+            'comment'
+        )
+        # Log biasanya read-only via API
+        read_only_fields = fields
+
+class StockOpnameSessionSerializer(serializers.ModelSerializer):
+    created_by = BasicUserSerializer(read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    # Jika Anda ingin menampilkan item dalam detail sesi:
+    # items = StockOpnameItemSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = StockOpnameSession
+        fields = (
+            'id', 'opname_date', 'uploaded_file', 'created_by', 'created_at',
+            'status', 'status_display', 'notes', #'items' # uncomment 'items' jika field di atas di-uncomment
+        )
+        # Tentukan read_only fields
+        read_only_fields = ('created_at', 'created_by', 'status', 'status_display') # 'items' juga read_only jika ditambahkan
+
+class StockOpnameFileUploadSerializer(serializers.Serializer):
+    """Serializer untuk menerima file upload Excel stock opname."""
+    file = serializers.FileField(required=True)
+    opname_date = serializers.DateField(required=False, default=timezone.now().date())
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+class StockOpnameConfirmSerializer(serializers.Serializer):
+    """Serializer untuk Operator mengkonfirmasi item stock opname."""
+    confirmation_status = serializers.ChoiceField(choices=StockOpnameItem.ConfirmationStatus.choices, required=True)
+    confirmation_notes = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+    def validate_confirmation_status(self, value):
+        if value == StockOpnameItem.ConfirmationStatus.PENDING:
+             raise serializers.ValidationError(_("Tidak dapat mengkonfirmasi ke status PENDING."))
+        return value
 
 class ReceiptUploadSerializer(serializers.Serializer):
     """Serializer untuk menerima file upload kuitansi."""
