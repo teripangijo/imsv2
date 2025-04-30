@@ -958,28 +958,97 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
 
 # --- Views Permintaan Barang (Workflow) ---
 
+# class RequestViewSet(viewsets.ModelViewSet):
+#     """Endpoint untuk mengelola permintaan barang dan alur kerjanya."""
+#     # Sesuaikan prefetch_related
+#     queryset = Request.objects.select_related(
+#         'requester', 'supervisor1_approver', 'supervisor2_approver',
+#         'operator_processor', 'spmb_document'
+#     ).prefetch_related(
+#         'items__variant__base_item_code' # Prefetch item, varian, dan kode dasarnya
+#     ).all()
+
+#     # get_serializer_class, get_permissions, get_queryset, perform_create, _add_log tetap sama
+#     def get_serializer_class(self):
+#         if self.action == 'list': return RequestListSerializer
+#         if self.action == 'create': return RequestCreateSerializer
+#         return RequestDetailSerializer
+#     def get_permissions(self):
+#         if self.action == 'create': self.permission_classes = [IsPeminta]
+#         elif self.action in ['list', 'retrieve']: self.permission_classes = [permissions.IsAuthenticated]
+#         elif self.action in ['update', 'partial_update']: self.permission_classes = [permissions.IsAuthenticated]
+#         elif self.action == 'destroy': self.permission_classes = [IsOwnerOfRequest & permissions.SAFE_METHODS | IsAdminUser]
+#         else: self.permission_classes = [permissions.IsAuthenticated]
+#         return super().get_permissions()
+#     def get_queryset(self):
+#         user = self.request.user
+#         queryset = super().get_queryset()
+#         if user.is_admin: return queryset
+#         elif user.is_peminta: return queryset.filter(requester=user)
+#         elif user.is_atasan_peminta: return queryset.filter(status=Request.Status.SUBMITTED)
+#         elif user.is_atasan_operator: return queryset.filter(status=Request.Status.APPROVED_SPV1)
+#         elif user.is_operator: return queryset.filter(status__in=[Request.Status.APPROVED_SPV2, Request.Status.PROCESSING, Request.Status.COMPLETED])
+#         else: return queryset.none()
+#     def perform_create(self, serializer):
+#         serializer.save(requester=self.request.user)
+#     def _add_log(self, request_obj, user, action, comment=None, status_from=None, status_to=None):
+#          RequestLog.objects.create(
+#              request=request_obj, user=user, action=action,
+#              status_from=status_from or request_obj.status,
+#              status_to=status_to or request_obj.status,
+#              comment=comment
+#          )
+
+#     # --- Custom Actions for Workflow (Tetap Sama) ---
+#     @action(detail=True, methods=['post'], permission_classes=[IsOwnerOfRequest])
+#     def submit(self, request, pk=None):
+#         # ... (Kode sama seperti sebelumnya) ...
+#         req = self.get_object();
+#         if req.status != Request.Status.DRAFT: return Response(...)
+#         if not req.items.exists(): return Response(...)
+#         if not req.request_number: req.status=Request.Status.SUBMITTED; req.submitted_at=timezone.now(); req.save()
+#         else: req.status=Request.Status.SUBMITTED; req.submitted_at=timezone.now(); req.save(...)
+#         self._add_log(...)
+#         serializer = self.get_serializer(req); return Response(serializer.data)
+
+#     @action(detail=True, methods=['post'], permission_classes=[CanApproveRequestSpv1])
+#     def approve_spv1(self, request, pk=None):
+#         # ... (Kode sama seperti sebelumnya) ...
+#         req = self.get_object();
+#         if req.status != Request.Status.SUBMITTED: return Response(...)
+#         req.status=Request.Status.APPROVED_SPV1; req.supervisor1_approver=request.user; req.supervisor1_decision_at=timezone.now(); req.save(...)
+#         self._add_log(...)
+#         serializer = self.get_serializer(req); return Response(serializer.data)
+
 class RequestViewSet(viewsets.ModelViewSet):
     """Endpoint untuk mengelola permintaan barang dan alur kerjanya."""
-    # Sesuaikan prefetch_related
+    # --- QuerySet dan konfigurasi lain seperti sebelumnya ---
     queryset = Request.objects.select_related(
         'requester', 'supervisor1_approver', 'supervisor2_approver',
         'operator_processor', 'spmb_document'
     ).prefetch_related(
-        'items__variant__base_item_code' # Prefetch item, varian, dan kode dasarnya
+        'items__variant__base_item_code' # Sesuaikan prefetch jika perlu
     ).all()
 
-    # get_serializer_class, get_permissions, get_queryset, perform_create, _add_log tetap sama
     def get_serializer_class(self):
         if self.action == 'list': return RequestListSerializer
         if self.action == 'create': return RequestCreateSerializer
         return RequestDetailSerializer
+
     def get_permissions(self):
+        # --- PERBAIKAN: Gunakan IsPeminta dari permissions.py ---
         if self.action == 'create': self.permission_classes = [IsPeminta]
+        # --- AKHIR PERBAIKAN ---
         elif self.action in ['list', 'retrieve']: self.permission_classes = [permissions.IsAuthenticated]
         elif self.action in ['update', 'partial_update']: self.permission_classes = [permissions.IsAuthenticated]
         elif self.action == 'destroy': self.permission_classes = [IsOwnerOfRequest & permissions.SAFE_METHODS | IsAdminUser]
-        else: self.permission_classes = [permissions.IsAuthenticated]
+        # Permissions untuk custom actions diatur di decorator @action
+        # Jika tidak diatur di decorator, permission default viewset akan berlaku
+        # atau Anda bisa tambahkan kondisi elif untuk action spesifik di sini
+        else: self.permission_classes = [permissions.IsAuthenticated] # Default
         return super().get_permissions()
+
+
     def get_queryset(self):
         user = self.request.user
         queryset = super().get_queryset()
@@ -989,36 +1058,99 @@ class RequestViewSet(viewsets.ModelViewSet):
         elif user.is_atasan_operator: return queryset.filter(status=Request.Status.APPROVED_SPV1)
         elif user.is_operator: return queryset.filter(status__in=[Request.Status.APPROVED_SPV2, Request.Status.PROCESSING, Request.Status.COMPLETED])
         else: return queryset.none()
+
     def perform_create(self, serializer):
         serializer.save(requester=self.request.user)
-    def _add_log(self, request_obj, user, action, comment=None, status_from=None, status_to=None):
-         RequestLog.objects.create(
-             request=request_obj, user=user, action=action,
-             status_from=status_from or request_obj.status,
-             status_to=status_to or request_obj.status,
-             comment=comment
-         )
 
-    # --- Custom Actions for Workflow (Tetap Sama) ---
+    # --- Definisi _add_log (Tetap sama) ---
+    def _add_log(self, request_obj, user, action, comment=None, status_from=None, status_to=None):
+         """Helper untuk mencatat log."""
+         print(f"--- _add_log DIPANGGIL: action={action}, user={user} ---") # DEBUG PEMANGGILAN
+         try:
+             RequestLog.objects.create(
+                 request=request_obj,
+                 user=user,
+                 action=action,
+                 status_from=status_from or request_obj.status,
+                 status_to=status_to or request_obj.status,
+                 comment=comment
+             )
+             print(f"--- _add_log SUKSES: action={action} ---") # DEBUG SUKSES
+         except Exception as e:
+             print(f"--- _add_log ERROR: Gagal membuat log untuk action={action} ---") # DEBUG ERROR
+             traceback.print_exc()
+    # --- AKHIR DEFINISI _add_log ---
+
+
+    # --- Custom Actions for Workflow ---
+
     @action(detail=True, methods=['post'], permission_classes=[IsOwnerOfRequest])
     def submit(self, request, pk=None):
-        # ... (Kode sama seperti sebelumnya) ...
-        req = self.get_object();
-        if req.status != Request.Status.DRAFT: return Response(...)
-        if not req.items.exists(): return Response(...)
-        if not req.request_number: req.status=Request.Status.SUBMITTED; req.submitted_at=timezone.now(); req.save()
-        else: req.status=Request.Status.SUBMITTED; req.submitted_at=timezone.now(); req.save(...)
-        self._add_log(...)
-        serializer = self.get_serializer(req); return Response(serializer.data)
+        """Aksi Peminta untuk mengajukan request dari DRAFT."""
+        print("--- Action 'submit' dimulai ---")
+        req = self.get_object()
+        if req.status != Request.Status.DRAFT:
+            return Response({"error": "Hanya request DRAFT yang bisa diajukan."}, status=status.HTTP_400_BAD_REQUEST)
+        if not req.items.exists():
+             return Response({"error": "Request harus memiliki minimal 1 item barang."}, status=status.HTTP_400_BAD_REQUEST)
 
+        status_sebelum = req.status
+
+        if not req.request_number:
+             req.status = Request.Status.SUBMITTED
+             req.submitted_at = timezone.now()
+             print(f"--- Action 'submit': Memanggil req.save() ---")
+             req.save()
+        else:
+             req.status = Request.Status.SUBMITTED
+             req.submitted_at = timezone.now()
+             print(f"--- Action 'submit': Memanggil req.save(update_fields) ---")
+             req.save(update_fields=['status', 'submitted_at'])
+
+        print(f"--- Action 'submit': Persiapan memanggil _add_log ---")
+        print(f"--- Argumen req: {req} (ID: {req.id}) ---")
+        print(f"--- Argumen request.user: {request.user} (ID: {request.user.id}) ---")
+        print(f"--- Argumen action: 'SUBMIT' ---")
+        print(f"--- Argumen status_from: {status_sebelum} ---")
+        print(f"--- Argumen status_to: {Request.Status.SUBMITTED} ---")
+
+        try:
+            # --- PERUBAHAN: Panggil dengan argumen posisi ---
+            self._add_log(
+                req,                    # request_obj (posisi 1 setelah self)
+                request.user,           # user (posisi 2 setelah self)
+                "SUBMIT",               # action (posisi 3 setelah self)
+                status_from=status_sebelum,
+                status_to=Request.Status.SUBMITTED
+                # comment=None (opsional, biarkan default)
+            )
+            # --- AKHIR PERUBAHAN ---
+        except TypeError as te:
+             print(f"--- Action 'submit': TypeError saat memanggil _add_log! ---")
+             traceback.print_exc()
+             return Response({"error": "Internal error saat logging (TypeError)."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e_log:
+             print(f"--- Action 'submit': Exception lain saat memanggil _add_log: {type(e_log).__name__} ---")
+             traceback.print_exc()
+
+        print("--- Action 'submit' selesai, menyiapkan response ---")
+        serializer = self.get_serializer(req)
+        return Response(serializer.data)
+
+    # --- Pastikan pemanggilan _add_log di action lain juga benar ---
     @action(detail=True, methods=['post'], permission_classes=[CanApproveRequestSpv1])
     def approve_spv1(self, request, pk=None):
-        # ... (Kode sama seperti sebelumnya) ...
-        req = self.get_object();
-        if req.status != Request.Status.SUBMITTED: return Response(...)
-        req.status=Request.Status.APPROVED_SPV1; req.supervisor1_approver=request.user; req.supervisor1_decision_at=timezone.now(); req.save(...)
-        self._add_log(...)
-        serializer = self.get_serializer(req); return Response(serializer.data)
+        req = self.get_object()
+        if req.status != Request.Status.SUBMITTED: return Response({"error": "Hanya request SUBMITTED yang bisa disetujui SPV1."}, status=status.HTTP_400_BAD_REQUEST)
+        status_sebelum = req.status
+        req.status = Request.Status.APPROVED_SPV1
+        req.supervisor1_approver = request.user
+        req.supervisor1_decision_at = timezone.now()
+        req.save(update_fields=['status', 'supervisor1_approver', 'supervisor1_decision_at'])
+        # Panggil dengan argumen posisi
+        self._add_log(req, request.user, "APPROVE_SPV1", status_from=status_sebelum, status_to=req.status)
+        serializer = self.get_serializer(req)
+        return Response(serializer.data)
 
     @action(detail=True, methods=['post'], permission_classes=[CanApproveRequestSpv1])
     def reject_spv1(self, request, pk=None):

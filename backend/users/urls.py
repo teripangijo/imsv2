@@ -10,7 +10,7 @@ urlpatterns = [
     path('', include(router.urls)),
     path('auth/login/', views.LoginView.as_view(), name='auth-login'),
     path('auth/logout/', views.LogoutView.as_view(), name='auth-logout'),
-    path('users/me/', views.CurrentUserView.as_view(), name='user-me'),
+    path('auth/profile/', views.CurrentUserView.as_view(), name='user-me'),
     path('users/change-password/', views.ChangePasswordView.as_view(), name='change-password'),
     path('users/force-change-password/', views.ForceChangePasswordView.as_view(), name='force-change-password'),
 ]
