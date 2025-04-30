@@ -2,9 +2,11 @@
 from rest_framework import serializers
 from django.utils import timezone
 from .models import (
-    ProductCategory, ProductVariant, InventoryItem, Stock,
+    ProductVariant, InventoryItem, Stock,
     Request, RequestItem, SPMB, RequestLog, Transaction,
-    StockOpnameSession, StockOpnameItem
+    StockOpnameSession, StockOpnameItem,
+    ItemCodeGolongan, ItemCodeBidang, ItemCodeKelompok, ItemCodeSubKelompok, ItemCodeBarang,
+    Receipt
 )
 # Impor serializer user yang ringkas
 from users.serializers import BasicUserSerializer, UserSerializer
@@ -13,20 +15,29 @@ from django.utils.translation import gettext_lazy as _
 
 # --- Serializer Produk & Stok ---
 
-class ProductCategorySerializer(serializers.ModelSerializer):
-    class Meta:
-        model = ProductCategory
-        fields = ('id', 'name', 'description')
+# class ProductCategorySerializer(serializers.ModelSerializer):
+#     class Meta:
+#         model = ProductCategory
+#         fields = ('id', 'name', 'description')
 
 class ProductVariantSerializer(serializers.ModelSerializer):
     # Tampilkan nama kategori, bukan hanya ID
-    category_name = serializers.CharField(source='category.name', read_only=True)
+    # category_name = serializers.CharField(source='category.name', read_only=True)
     # Tampilkan URL ke kategori jika menggunakan HyperlinkedModelSerializer nanti
     # category = serializers.HyperlinkedRelatedField(view_name='productcategory-detail', read_only=True)
 
+    base_item_full_code = serializers.CharField(source='base_item_code.get_full_base_code', read_only=True)
+    base_item_description = serializers.CharField(source='base_item_code.base_description', read_only=True)
+    account_code = serializers.CharField(source='base_item_code.account_code', read_only=True)
+
     class Meta:
         model = ProductVariant
-        fields = ('id', 'category', 'category_name', 'name', 'description', 'unit_of_measure')
+        fields = (
+            'id', 'base_item_code', # ID dari ItemCodeBarang
+            'base_item_full_code', 'base_item_description', 'account_code', # Info dari ItemCodeBarang
+            'specific_code', 'full_code', # Kode baru
+            'name', 'description', 'unit_of_measure'
+        )
         # 'category' di sini adalah ID untuk write operations (membuat/update varian)
 
 class StockSerializer(serializers.ModelSerializer):

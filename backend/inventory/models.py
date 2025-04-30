@@ -6,61 +6,214 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 import uuid # Untuk nomor unik sementara jika diperlukan
 
-# --- Model Dasar Barang ---
-
-class ProductCategory(models.Model):
-    """Merepresentasikan Jenis Barang (e.g., ATK, Komputer)"""
-    name = models.CharField(_('nama kategori'), max_length=100, unique=True)
-    description = models.TextField(_('deskripsi'), blank=True, null=True)
+class ItemCodeGolongan(models.Model):
+    code = models.CharField(_('kode golongan'), max_length=1, unique=True)
+    description = models.CharField(_('uraian golongan'), blank=True, null=True, max_length=100)
 
     class Meta:
-        verbose_name = _('Kategori Produk')
-        verbose_name_plural = _('Kategori Produk')
-        ordering = ['name']
+        verbose_name = _('Golongan Barang')
+        verbose_name_plural = _('Golongan Barang')
+        ordering = ['code']
 
     def __str__(self):
-        return self.name
+        return f"{self.code} - {self.description or 'Tanpa Uraian'}"
+    
+class ItemCodeBidang(models.Model):
+    golongan = models.ForeignKey(ItemCodeGolongan, related_name='bidang_set', on_delete=models.CASCADE, verbose_name=_('golongan'))
+    code = models.CharField(_('kode bidang'), max_length=2, unique=True)
+    description = models.CharField(_('uraian bidang'), blank=True, null=True, max_length=100)
 
+    class Meta:
+        verbose_name = _('Bidang Barang')
+        verbose_name_plural = _('Bidang Barang')
+        ordering = ['golongan__code', 'code']
+
+    def __str__(self):
+        return f"{self.golongan.code}.{self.code} - {self.description or 'Tanpa Uraian'}"
+    
+class ItemCodeKelompok(models.Model):
+    bidang = models.ForeignKey(ItemCodeBidang, on_delete=models.CASCADE, related_name='kelompok_set')
+    code = models.CharField(_('kode kelompok'), max_length=2)
+    description = models.TextField(_('uraian kelompok'), blank=True, null=True)
+
+    class Meta:
+        verbose_name = _('Kode Kelompok Barang')
+        verbose_name_plural = _('Kode Kelompok Barang')
+        unique_together = ('bidang', 'code') # Kode kelompok unik per bidang
+        ordering = ['bidang__golongan__code', 'bidang__code', 'code']
+
+    def __str__(self):
+        return f"{self.bidang.golongan.code}.{self.bidang.code}.{self.code} - {self.description or 'Tanpa Uraian'}"
+
+class ItemCodeSubKelompok(models.Model):
+    kelompok = models.ForeignKey(ItemCodeKelompok, on_delete=models.CASCADE, related_name='subkelompok_set')
+    code = models.CharField(_('kode sub kelompok'), max_length=2)
+    base_description = models.TextField(_('uraian sub kelompok (dasar)')) # Dari ur_sskel
+
+    class Meta:
+        verbose_name = _('Kode Sub Kelompok Barang')
+        verbose_name_plural = _('Kode Sub Kelompok Barang')
+        unique_together = ('kelompok', 'code') # Kode subkelompok unik per kelompok
+        ordering = ['kelompok__bidang__golongan__code', 'kelompok__bidang__code', 'kelompok__code', 'code']
+
+    def __str__(self):
+        return f"{self.get_base_code_prefix()} - {self.base_description}"
+
+    def get_base_code_prefix(self):
+        """Mengembalikan prefix kode hingga level subkelompok (tanpa kd_brg). Misal: 1.01.01.01"""
+        return f"{self.kelompok.bidang.golongan.code}.{self.kelompok.bidang.code}.{self.kelompok.code}.{self.code}"
+
+    def get_full_base_code_prefix(self):
+        """Mengembalikan prefix kode hingga level subkelompok (tanpa kd_brg). Misal: 1010101"""
+        # Pastikan semua kode memiliki panjang yang benar (padding jika perlu)
+        gol_code = self.kelompok.bidang.golongan.code.zfill(1) # Harusnya 1 digit
+        bid_code = self.kelompok.bidang.code.zfill(2) # Harusnya 2 digit
+        kel_code = self.kelompok.code.zfill(2) # Harusnya 2 digit
+        skel_code = self.code.zfill(2) # Harusnya 2 digit
+        return f"{gol_code}{bid_code}{kel_code}{skel_code}"
+
+
+class ItemCodeBarang(models.Model):
+     """Merepresentasikan entitas barang dasar dari CSV."""
+     sub_kelompok = models.ForeignKey(ItemCodeSubKelompok, on_delete=models.CASCADE, related_name='barang_set')
+     code = models.CharField(_('kode barang (akhir)'), max_length=3) # kd_brg dari CSV
+     base_description = models.TextField(_('uraian barang (dasar)')) # ur_sskel (mungkin redundan dg subkelompok?)
+
+     account_code = models.CharField(_('kode akun'), max_length=20, blank=True, null=True)
+     account_description = models.CharField(_('uraian akun'), max_length=100, blank=True, null=True)
+
+     class Meta:
+         verbose_name = _('Kode Barang Dasar')
+         verbose_name_plural = _('Kode Barang Dasar')
+         unique_together = ('sub_kelompok', 'code')
+         ordering = ['sub_kelompok', 'code']
+
+     def __str__(self):
+         return f"{self.get_full_base_code()} - {self.base_description}"
+
+     def get_full_base_code(self):
+         """Mengembalikan Kode Barang lengkap tanpa kode spesifik. Misal: 1010101001"""
+         prefix = self.sub_kelompok.get_full_base_code_prefix()
+         brg_code = self.code.zfill(3) # Harusnya 3 digit
+         return f"{prefix}{brg_code}"
+
+# --- AKHIR MODEL BARU HIERARKI KODE ---
+
+# --- MODEL BARU UNTUK KUITANSI ---
+class Receipt(models.Model):
+    receipt_number = models.CharField(_('nomor kuitansi/PO'), max_length=100, unique=True) # Asumsi unik
+    supplier_name = models.CharField(_('nama pemasok'), max_length=255, blank=True, null=True)
+    receipt_date = models.DateField(_('tanggal kuitansi/pembelian'))
+    uploaded_file = models.FileField(_('file unggahan'), upload_to='receipts/%Y/%m/', blank=True, null=True)
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='uploaded_receipts', on_delete=models.PROTECT, verbose_name=_('diunggah oleh'))
+    uploaded_at = models.DateTimeField(_('diunggah tanggal'), auto_now_add=True)
+    # Anda bisa tambahkan status proses jika file perlu diproses terpisah
+    # processing_status = models.CharField(...)
+
+    class Meta:
+         verbose_name = _('Kuitansi Pembelian')
+         verbose_name_plural = _('Kuitansi Pembelian')
+         ordering = ['-receipt_date', '-uploaded_at']
+
+    def __str__(self):
+         return f"Kuitansi {self.receipt_number} ({self.receipt_date})"
+
+
+# --- Model Dasar Barang ---
+
+# class ProductCategory(models.Model):
+#     """Merepresentasikan Jenis Barang (e.g., ATK, Komputer)"""
+#     name = models.CharField(_('nama kategori'), max_length=100, unique=True)
+#     description = models.TextField(_('deskripsi'), blank=True, null=True)
+
+#     class Meta:
+#         verbose_name = _('Kategori Produk')
+#         verbose_name_plural = _('Kategori Produk')
+#         ordering = ['name']
+
+#     def __str__(self):
+#         return self.name
+
+# --- Product Variant ---
 class ProductVariant(models.Model):
     """Merepresentasikan Varian Barang spesifik (e.g., Pulpen Snowman 0.5)"""
-    category = models.ForeignKey(ProductCategory, related_name='variants', on_delete=models.PROTECT, verbose_name=_('kategori'))
-    name = models.CharField(_('nama varian'), max_length=150)
-    description = models.TextField(_('deskripsi'), blank=True, null=True)
+    # category = models.ForeignKey(ProductCategory, related_name='variants', on_delete=models.PROTECT, verbose_name=_('kategori'))
+    base_item_code = models.ForeignKey(ItemCodeBarang, related_name='variants', on_delete=models.PROTECT, verbose_name=_('kode barang dasar'))
+    specific_code = models.CharField(_('kode spesifik'), max_length=3, editable=False, blank=True, help_text="3 digit unik per kode barang dasar, di-generate otomatis.")
+    full_code = models.CharField(_('kode barang lengkap'), max_length=20, unique=True, editable=False, blank=True, db_index=True)
+
+    name = models.CharField(_('nama varian spesifik'), max_length=150, help_text="Contoh: Aspal Pertamina 60/70, Pulpen Snowman V5 Hitam")
+    description = models.TextField(_('deskripsi tambahan'), blank=True, null=True)
     unit_of_measure = models.CharField(_('satuan'), max_length=20, default='pcs', help_text="Contoh: pcs, box, rim, unit")
     # Tambahkan field lain jika perlu, misal: gambar, kode barang internal
 
     class Meta:
-        verbose_name = _('Varian Produk')
-        verbose_name_plural = _('Varian Produk')
-        unique_together = ('category', 'name') # Varian harus unik dalam satu kategori
-        ordering = ['category', 'name']
+        verbose_name = _('Varian Produk Spesifik')
+        verbose_name_plural = _('Varian Produk Spesifik')
+        # Nama varian harus unik dalam satu jenis barang dasar
+        unique_together = ('base_item_code', 'name')
+        ordering = ['base_item_code', 'specific_code'] # Urutkan berdasarkan kode
 
     def __str__(self):
-        return f"{self.category.name} - {self.name}"
+        # Tampilkan kode lengkap jika sudah ada, jika belum (saat baru dibuat), tampilkan nama
+        return f"{self.full_code or '(Kode Belum Ada)'} - {self.name}"
+
+def _generate_specific_code(self):
+        """Generate 3 digit kode spesifik berikutnya untuk base_item_code ini."""
+        if not self.base_item_code_id:
+            return None # Belum bisa generate jika base_item belum tersimpan
+
+        last_variant = ProductVariant.objects.filter(
+            base_item_code=self.base_item_code
+        ).exclude(pk=self.pk).order_by('-specific_code').first()
+
+        if last_variant and last_variant.specific_code:
+            try:
+                next_num = int(last_variant.specific_code) + 1
+            except ValueError:
+                 # Fallback jika specific_code lama tidak valid (seharusnya tidak terjadi)
+                 next_num = ProductVariant.objects.filter(base_item_code=self.base_item_code).count() # Perlu +1 jika pk belum ada
+        else:
+            next_num = 1 # Kode pertama
+
+        return f"{next_num:03d}" # Format jadi 3 digit (001, 002, ..., 010, ..., 100, ...)
+
+def save(self, *args, **kwargs):
+        if not self.pk or not self.specific_code: # Hanya generate saat create atau jika kosong
+            self.specific_code = self._generate_specific_code()
+
+        if self.base_item_code_id and self.specific_code and (not self.pk or not self.full_code):
+            # Generate full_code jika komponennya sudah ada dan belum di-generate
+            base_code_part = self.base_item_code.get_full_base_code()
+            self.full_code = f"{base_code_part}{self.specific_code}"
+
+        super().save(*args, **kwargs) # Panggil save asli
 
 # --- Model Stok ---
 
 class InventoryItem(models.Model):
     """Item spesifik dalam stok, mencatat batch masuk untuk FIFO"""
-    variant = models.ForeignKey(ProductVariant, related_name='inventory_items', on_delete=models.PROTECT, verbose_name=_('varian produk'))
+    variant = models.ForeignKey(ProductVariant, related_name='inventory_items', on_delete=models.PROTECT, verbose_name=_('varian produk spesifik'))
     quantity = models.PositiveIntegerField(_('jumlah'))
     purchase_price = models.DecimalField(_('harga beli'), max_digits=15, decimal_places=2, blank=True, null=True, help_text="Harga per satuan")
     entry_date = models.DateTimeField(_('tanggal masuk'), default=timezone.now)
     expiry_date = models.DateField(_('tanggal kadaluarsa'), blank=True, null=True)
     added_by = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='added_inventory_items', null=True, blank=True, on_delete=models.SET_NULL, verbose_name=_('ditambahkan oleh'))
-    # Bisa ditambah: nomor batch, supplier, etc.
+
+    # Tambahkan relasi ke Kuitansi
+    receipt = models.ForeignKey(Receipt, related_name='inventory_items', null=True, blank=True, on_delete=models.SET_NULL, verbose_name=_('kuitansi terkait'))
 
     class Meta:
         verbose_name = _('Item Inventaris (Batch)')
         verbose_name_plural = _('Item Inventaris (Batch)')
-        ordering = ['entry_date', 'id'] # Urutan FIFO berdasarkan tanggal masuk
+        ordering = ['entry_date', 'id'] # Urutan FIFO
 
     def __str__(self):
         return f"{self.variant} ({self.quantity} {self.variant.unit_of_measure}) - Masuk: {self.entry_date.strftime('%Y-%m-%d')}"
 
 class Stock(models.Model):
-    """Mencatat jumlah total stok terkini per varian"""
-    variant = models.OneToOneField(ProductVariant, related_name='stock_level', on_delete=models.CASCADE, primary_key=True, verbose_name=_('varian produk'))
+    """Mencatat jumlah total stok terkini per varian spesifik"""
+    variant = models.OneToOneField(ProductVariant, related_name='stock_level', on_delete=models.CASCADE, primary_key=True, verbose_name=_('varian produk spesifik'))
     total_quantity = models.PositiveIntegerField(_('total kuantitas'), default=0)
     low_stock_threshold = models.PositiveIntegerField(_('ambang batas stok rendah'), default=10, blank=True, null=True)
     last_updated = models.DateTimeField(_('terakhir diperbarui'), auto_now=True)
@@ -68,15 +221,14 @@ class Stock(models.Model):
     class Meta:
         verbose_name = _('Level Stok')
         verbose_name_plural = _('Level Stok')
-        ordering = ['variant__name']
+        ordering = ['variant__full_code'] # Urutkan berdasarkan kode barang lengkap
 
     def __str__(self):
-        return f"Stok {self.variant}: {self.total_quantity}"
+        return f"Stok {self.variant.name} ({self.variant.full_code or 'N/A'}): {self.total_quantity}"
 
     @property
     def is_low_stock(self):
-        if self.low_stock_threshold is None:
-            return False
+        if self.low_stock_threshold is None: return False
         return self.total_quantity <= self.low_stock_threshold
 
     @property

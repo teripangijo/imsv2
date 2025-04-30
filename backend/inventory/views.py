@@ -12,12 +12,14 @@ import pandas as pd # Untuk import Excel, tambahkan ke requirements.txt nanti
 import openpyxl # Juga untuk Excel
 
 from .models import (
-    ProductCategory, ProductVariant, InventoryItem, Stock,
+    ProductVariant, InventoryItem, Stock,
     Request, RequestItem, SPMB, RequestLog, Transaction,
-    StockOpnameSession, StockOpnameItem
+    StockOpnameSession, StockOpnameItem,
+    ItemCodeGolongan, ItemCodeBidang, ItemCodeKelompok, ItemCodeSubKelompok, ItemCodeBarang,
+    Receipt
 )
 from .serializers import (
-    ProductCategorySerializer, ProductVariantSerializer, InventoryItemSerializer,
+    ProductVariantSerializer, InventoryItemSerializer,
     InventoryItemCreateSerializer, StockSerializer, RequestListSerializer,
     RequestDetailSerializer, RequestCreateSerializer, SPMBSerializer,
     RequestLogSerializer, TransactionSerializer, StockOpnameSessionSerializer,
@@ -33,10 +35,10 @@ from .permissions import (
 
 # --- Views Produk & Stok ---
 
-class ProductCategoryViewSet(viewsets.ModelViewSet):
-    queryset = ProductCategory.objects.all()
-    serializer_class = ProductCategorySerializer
-    permission_classes = [IsAdminUser | IsOperatorOrReadOnly] # Admin/Operator bisa R/W, lain hanya R
+# class ProductCategoryViewSet(viewsets.ModelViewSet):
+#     queryset = ProductCategory.objects.all()
+#     serializer_class = ProductCategorySerializer
+#     permission_classes = [IsAdminUser | IsOperatorOrReadOnly] # Admin/Operator bisa R/W, lain hanya R
 
 class ProductVariantViewSet(viewsets.ModelViewSet):
     queryset = ProductVariant.objects.select_related('category').all() # Optimasi query

@@ -1,14 +1,13 @@
 # backend/inventory/admin.py
 from django.contrib import admin
 from .models import (
-    ProductCategory, ProductVariant, InventoryItem, Stock,
+    ProductVariant, InventoryItem, Stock,
     Request, RequestItem, SPMB, RequestLog, Transaction,
     StockOpnameSession, StockOpnameItem
 )
 
 # Daftarkan semua model agar muncul di admin interface
 # Anda bisa membuat kelas admin kustom untuk tampilan yang lebih baik nanti
-admin.site.register(ProductCategory)
 admin.site.register(ProductVariant)
 admin.site.register(InventoryItem)
 admin.site.register(Stock)

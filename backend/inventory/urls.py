@@ -4,7 +4,7 @@ from rest_framework.routers import DefaultRouter
 from . import views
 
 router = DefaultRouter()
-router.register(r'product-categories', views.ProductCategoryViewSet)
+# router.register(r'product-categories', views.ProductCategoryViewSet)
 router.register(r'product-variants', views.ProductVariantViewSet)
 router.register(r'stock-levels', views.StockViewSet)
 router.register(r'inventory-items', views.InventoryItemViewSet)
