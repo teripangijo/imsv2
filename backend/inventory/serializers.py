@@ -64,14 +64,33 @@ class ItemCodeBarangSerializer(serializers.ModelSerializer):
 
 # --- Serializer untuk Varian Produk Spesifik (DEFINISIKAN SEBELUM DIGUNAKAN) ---
 class ProductVariantSerializer(serializers.ModelSerializer):
+    """Serializer untuk Varian Produk Spesifik (misal: Aspal Pertamina)."""
     base_item_code = ItemCodeBarangSerializer(read_only=True)
-    base_item_code_id = serializers.PrimaryKeyRelatedField(queryset=ItemCodeBarang.objects.all(), source='base_item_code', write_only=True)
+    base_item_code_id = serializers.PrimaryKeyRelatedField(
+        queryset=ItemCodeBarang.objects.all(), source='base_item_code', write_only=True
+    )
+    # Kode specific & full adalah read-only (di-generate model)
     specific_code = serializers.CharField(read_only=True)
     full_code = serializers.CharField(read_only=True)
+    # Tambahkan barcode sebagai read-only field
+    barcode = serializers.CharField(read_only=True) # <-- TAMBAHKAN INI
+
     class Meta:
         model = ProductVariant
-        fields = ('id','base_item_code','base_item_code_id','specific_code','full_code','type_name','name','description','unit_of_measure')
-        read_only_fields = ('specific_code', 'full_code')
+        fields = (
+            'id',
+            'base_item_code',         # Nested object saat GET
+            'base_item_code_id',      # ID untuk POST/PUT
+            'specific_code',          # Kode 3 digit (read-only)
+            'full_code',              # Kode lengkap (read-only)
+            'barcode',                # Barcode (read-only) <-- TAMBAHKAN INI
+            'type_name',              # Jenis Barang
+            'name',                   # Nama spesifik (merk/tipe)
+            'description',            # Deskripsi tambahan (opsional)
+            'unit_of_measure'         # Satuan (pcs, rim, dll.)
+        )
+        # Barcode juga read-only karena di-generate otomatis
+        read_only_fields = ('specific_code', 'full_code', 'barcode')
 
 # --- Serializer Stok ---
 class StockSerializer(serializers.ModelSerializer):
